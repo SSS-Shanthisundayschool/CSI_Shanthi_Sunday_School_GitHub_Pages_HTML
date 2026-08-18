@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#203b2d" />
+  <title>CSI Shanthi Church Sunday School Attendance</title>
+  <meta name="description" content="Attendance and insights for CSI Shanthi Church Sunday School, Wilson Garden." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <section id="authView" class="auth-shell">
+    <div class="auth-art">
+      <div class="brand-mark">CSI</div>
+      <div>
+        <p class="eyebrow">Wilson Garden</p>
+        <h1>Shanthi Church<br><em>Sunday School</em></h1>
+        <p class="auth-copy">A simple home for Sunday attendance, student care and class insights.</p>
+      </div>
+      <div class="verse-card"><span>“Teach me your way, Lord.”</span><small>Psalm 86:11</small></div>
+    </div>
+    <div class="auth-panel">
+      <div class="auth-card">
+        <div class="mobile-brand"><div class="brand-mark small">CSI</div><div><b>Sunday School</b><span>Wilson Garden</span></div></div>
+        <p class="eyebrow">Welcome back</p>
+        <h2>Sign in</h2>
+        <p class="muted">Admins and teachers use the same sign-in. Teachers only see their assigned classes.</p>
+        <form id="loginForm" class="form-stack">
+          <label>Email<input id="loginEmail" type="email" required autocomplete="email" placeholder="teacher@example.com"></label>
+          <label>Password<input id="loginPassword" type="password" required autocomplete="current-password" placeholder="••••••••"></label>
+          <button class="btn primary wide" type="submit">Sign in</button>
+        </form>
+        <button id="showSignup" class="text-btn" type="button">Teacher? Create an account request</button>
+        <form id="signupForm" class="form-stack hidden">
+          <div class="divider"><span>Teacher registration</span></div>
+          <label>Full name<input id="signupName" required placeholder="Your name"></label>
+          <label>Email<input id="signupEmail" type="email" required placeholder="teacher@example.com"></label>
+          <label>Password<input id="signupPassword" type="password" minlength="8" required placeholder="Minimum 8 characters"></label>
+          <button class="btn secondary wide" type="submit">Create teacher account</button>
+          <p class="tiny muted">An admin must assign your class before attendance becomes available.</p>
+        </form>
+        <div id="demoBox" class="demo-box hidden">
+          <b>Preview mode</b><span>Supabase is not configured yet. Use the button below to explore locally with your imported roster.</span>
+          <button id="demoLogin" class="btn ghost wide" type="button">Open admin preview</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div id="appView" class="app-shell hidden">
+    <aside class="sidebar" id="sidebar">
+      <div class="side-brand"><div class="brand-mark small">CSI</div><div><b>Sunday School</b><span>Wilson Garden</span></div></div>
+      <nav id="nav">
+        <button data-view="dashboard" class="nav-btn active"><span>⌂</span>Dashboard</button>
+        <button data-view="attendance" class="nav-btn"><span>✓</span>Mark attendance</button>
+        <button data-view="people" class="nav-btn admin-only"><span>♙</span>People</button>
+        <button data-view="reports" class="nav-btn"><span>▦</span>Reports</button>
+        <button data-view="users" class="nav-btn admin-only"><span>♧</span>Accounts</button>
+        <button data-view="backup" class="nav-btn admin-only"><span>⇩</span>Backup</button>
+      </nav>
+      <div class="side-user"><div class="avatar" id="avatar">A</div><div><b id="sideUserName">Admin</b><span id="sideRole">Administrator</span></div><button id="logoutBtn" title="Sign out">↗</button></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="menuBtn" class="icon-btn">☰</button>
+        <div><p class="eyebrow" id="viewEyebrow">Academic year</p><h2 id="viewTitle">Dashboard</h2></div>
+        <div class="top-actions"><span class="date-chip" id="todayChip"></span><button class="avatar top-avatar" id="topAvatar">A</button></div>
+      </header>
+      <div id="content" class="content"></div>
+    </main>
+  </div>
+
+  <div id="modal" class="modal-backdrop hidden" role="dialog" aria-modal="true"><div class="modal-card"><button id="modalClose" class="modal-close">×</button><div id="modalBody"></div></div></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="seed-data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
