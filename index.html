@@ -350,6 +350,9 @@ function renderPublicDashboard(){
 function historicalPersonKey(name,group=''){
   return `${String(name||'').trim().toLowerCase().replace(/\s+/g,' ')}|${String(group||'').trim().toLowerCase()}`;
 }
+function historicalStudentNameKey(name){
+  return String(name||'').trim().toLowerCase().replace(/\s+/g,' ');
+}
 function historicalPeriodsFromRows(rows){
   const periods=[
     {key:'2024-25',label:'2024–25',start:'2024-06-01',end:'2025-05-31'},
@@ -400,11 +403,20 @@ function buildHistoricalSummary(period){
     best_streak:bestPresentRun(p.rows)
   }));
   const students=people_summary.filter(p=>String(p.role||'Student').toLowerCase()==='student');
+
+  // Historical spreadsheets may list the same child under different classes during the year.
+  // For the academic-year headcount, count a student once by normalized name.
+  const uniqueStudentNames=[...new Set(
+    students
+      .map(p=>historicalStudentNameKey(p.name))
+      .filter(Boolean)
+  )];
+
   const follow_up=students.filter(p=>p.absence_streak>=(cfg.chronicAbsenceThreshold||3)).sort((a,b)=>b.absence_streak-a.absence_streak).slice(0,12);
   const streaks=students.filter(p=>p.current_streak>0).sort((a,b)=>b.current_streak-a.current_streak).slice(0,12);
   return {
     period_key:period.key,label:period.label,start_date:period.start,end_date:period.end,
-    total_records:rows.length,unique_people:people_summary.length,unique_students:students.length,
+    total_records:rows.length,unique_people:people_summary.length,unique_students:uniqueStudentNames.length,
     total_classes:groups.length,overall_attendance_rate:calcRate(rows),latest_sunday:latest,
     latest_sunday_rate:calcRate(latestRows),monthly_trend,class_summary,follow_up,streaks,
     people_summary,generated_at:new Date().toISOString()
@@ -498,7 +510,7 @@ function renderHistoricalDashboard(s,periods){
   const classRates=(s.class_summary||[]).map(x=>({g:x.group_name,rate:Number(x.attendance_rate||0)}));
   const follow=s.follow_up||[], streaks=s.streaks||[];
   $('#content').innerHTML=`<section class="hero-strip"><div><div class="toolbar" style="padding:0;margin-bottom:10px"><label class="field"><span>Academic year</span><select id="dashboardPeriod">${periods.map(p=>`<option value="${esc(p.key)}" ${p.key===S.dashboardPeriod?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label></div><p class="eyebrow">${esc(s.label||S.dashboardPeriod)} historical analytics</p><h3>${esc(s.label||S.dashboardPeriod)} Sunday School overview</h3><p>Historical charts are calculated from the archived attendance you imported. Opening this dashboard reads one small summary document, not thousands of attendance records.</p></div><div class="hero-actions"><button class="btn secondary" id="historicalReportBtn">Open report</button></div></section>
-  <div class="stats"><div class="stat-card"><span>Students recorded</span><strong>${Number(s.unique_students||0)}</strong><small>${Number(s.total_classes||0)} classes in the archive</small></div><div class="stat-card"><span>${esc(s.label||'Historical')} attendance</span><strong>${Number(s.overall_attendance_rate||0)}%</strong><small>${Number(s.total_records||0)} marked records</small></div><div class="stat-card"><span>Latest recorded Sunday</span><strong>${s.latest_sunday?Number(s.latest_sunday_rate||0)+'%':'—'}</strong><small>${s.latest_sunday?fmtDate(s.latest_sunday):'No attendance'}</small></div><div class="stat-card"><span>Follow-up alerts</span><strong>${follow.length}</strong><small>${cfg.chronicAbsenceThreshold||3}+ consecutive absences at period end</small></div></div>
+  <div class="stats"><div class="stat-card"><span>Unique students</span><strong>${Number(s.unique_students||0)}</strong><small>Counted once per academic year, excluding teachers & volunteers</small></div><div class="stat-card"><span>${esc(s.label||'Historical')} attendance</span><strong>${Number(s.overall_attendance_rate||0)}%</strong><small>${Number(s.total_records||0)} marked records</small></div><div class="stat-card"><span>Latest recorded Sunday</span><strong>${s.latest_sunday?Number(s.latest_sunday_rate||0)+'%':'—'}</strong><small>${s.latest_sunday?fmtDate(s.latest_sunday):'No attendance'}</small></div><div class="stat-card"><span>Follow-up alerts</span><strong>${follow.length}</strong><small>${cfg.chronicAbsenceThreshold||3}+ consecutive absences at period end</small></div></div>
   <div class="grid-2"><section class="panel"><div class="panel-head"><div><h3>Class comparison</h3><p class="muted tiny">${esc(s.label||'Historical year')} aggregate attendance</p></div></div><div class="class-bars">${classRates.length?classRates.map(x=>`<div class="bar-row"><span>${esc(x.g)}</span><div class="track"><div class="fill" style="width:${x.rate}%"></div></div><b>${x.rate}%</b></div>`).join(''):'<div class="empty">No class data.</div>'}</div></section>
   <section class="panel"><div class="panel-head"><div><h3>Needs a check-in</h3><p class="muted tiny">Consecutive absences at the end of this historical period</p></div></div><div class="alert-list">${follow.length?follow.slice(0,7).map(x=>historicalPersonRow(x,`<span class="badge bad">${x.absence_streak} Sundays</span>`)).join(''):'<div class="empty">No chronic-absence alerts in this period.</div>'}</div></section></div>
   <div class="grid-equal" style="margin-top:18px"><section class="panel"><div class="panel-head"><div><h3>Attendance streaks</h3><p class="muted tiny">Consecutive presents at the end of this historical period</p></div></div><div class="streak-list">${streaks.length?streaks.slice(0,7).map(x=>historicalPersonRow(x,`<span class="badge good">${x.current_streak} in a row</span>`)).join(''):'<div class="empty">No ending streaks recorded.</div>'}</div></section><section class="panel"><div class="panel-head"><div><h3>Monthly trend</h3><p class="muted tiny">${esc(s.label||'Historical year')} overall attendance</p></div></div>${historicalMonthlyChart(s.monthly_trend||[])}</section></div>
@@ -879,7 +891,7 @@ async function importHistoricalAttendance(){
     const auditBatch=writeBatch(db);
     auditBatch.set(doc(collection(db,'audit_logs')),auditDoc('historical_import','historical_attendance','archive',`Imported ${rows.length} historical attendance records`,{record_count:rows.length,date_range:payload.date_range||[],sources:payload.generated_from||[],anomaly_count:Array.isArray(payload.anomalies)?payload.anomalies.length:0,summary_periods:periods.map(p=>p.label)}));
     await auditBatch.commit();
-    toast(`Historical attendance imported and dashboard analytics built for ${periods.map(p=>p.label).join(' and ')}`);
+    toast(`Historical attendance imported and dashboard analytics rebuilt for ${periods.map(p=>p.label).join(' and ')} with unique-student headcounts`);
   }catch(err){console.error(err);toast('Historical import failed: '+friendlyError(err))}
   finally{btn.disabled=false;btn.textContent='Import historical data'}
 }
