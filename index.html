@@ -140,7 +140,7 @@ import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, quer
 'use strict';
 const cfg=window.CSI_CONFIG||{}, seed=window.CSI_SEED||{people:[],attendance:[]};
 const configured=!!(cfg.firebase?.apiKey&&cfg.firebase?.projectId); let auth=null,db=null;
-const S={user:null,profile:null,classes:[],people:[],attendance:[],users:[],assignments:[],auditLogs:[],auditCursor:null,auditHasMore:false,auditFilterFrom:'',auditFilterTo:'',publicSummary:null,academicYear:null,view:'dashboard',demo:false,attendanceDraft:{},selectedGroup:'',selectedDate:'',reportFrom:'',reportTo:'',reportGroup:'all'};
+const S={user:null,profile:null,classes:[],people:[],attendance:[],users:[],assignments:[],auditLogs:[],auditCursor:null,auditHasMore:false,auditFilterFrom:'',auditFilterTo:'',publicSummary:null,reportHistorical:[],historicalSummaries:[],dashboardPeriod:'current',dashboardSummary:null,academicYear:null,view:'dashboard',demo:false,attendanceDraft:{},selectedGroup:'',selectedDate:'',reportFrom:'',reportTo:'',reportGroup:'all'};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 function esc(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
 function initials(n=''){return n.split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase()||'?';}
@@ -157,6 +157,11 @@ function academicBounds(date=new Date()){
   return {start:`${y}-${String(m).padStart(2,'0')}-01`,end:`${y+1}-${String(m-1||12).padStart(2,'0')}-${new Date(y+1,m-1,0).getDate().toString().padStart(2,'0')}`,label:`${y}–${String(y+1).slice(-2)}`,status:'active'};
 }
 function allowedGroups(){if(S.profile?.role==='admin')return [...new Set(S.people.filter(p=>p.active).map(p=>p.group_name))].sort();return [...S.classes].sort()}
+function reportGroupOptions(){
+  const legacy=['Beginners 1','Beginners 2','Primary','Juniors','Juniors A','Juniors B','Inters','Inters A','Inters B','Seniors','Seniors A','Seniors B','Young Adults','Teachers','Volunteers'];
+  const historical=(S.reportHistorical||[]).map(r=>r.group_name).filter(Boolean);
+  return [...new Set([...allowedGroups(),...legacy,...historical])].sort();
+}
 function statusNorm(v){v=String(v||'').toLowerCase();return v.startsWith('p')?'Present':v.startsWith('a')?'Absent':'Unmarked'}
 function showModal(html){$('#modalBody').innerHTML=html;$('#modal').classList.remove('hidden')} function closeModal(){$('#modal').classList.add('hidden')}
 function todayChip(){$('#todayChip').textContent=new Date().toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short'})}
@@ -341,7 +346,101 @@ function renderPublicDashboard(){
     </section>`;
 }
 
-async function loadCloud(){const user=auth.currentUser;if(!user){S.user=S.profile=null;S.people=[];S.attendance=[];return}S.user={id:user.uid,email:user.email};S.profile=await ensureProfile(user);await loadAcademicYearConfig();await loadPublicSummary();S.classes=Array.isArray(S.profile.allowed_groups)?S.profile.allowed_groups:[];const scope=S.profile.role==='admin'?null:S.classes;S.people=(await getCollectionRows('people',scope)).sort((a,b)=>(a.group_name||'').localeCompare(b.group_name||'')||(a.name||'').localeCompare(b.name||''));S.attendance=(await getCollectionRows('attendance',scope)).sort((a,b)=>(a.attendance_date||'').localeCompare(b.attendance_date||''));if(S.profile.role==='admin'){const us=await getDocs(collection(db,'profiles'));S.users=us.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.full_name||'').localeCompare(b.full_name||''));S.assignments=S.users.flatMap(u=>(u.allowed_groups||[]).map(g=>({user_id:u.id,group_name:g})))}else{S.users=[];S.assignments=[];S.auditLogs=[];S.auditCursor=null;S.auditHasMore=false}autoBackup('cloud-sync')}
+
+function historicalPersonKey(name,group=''){
+  return `${String(name||'').trim().toLowerCase().replace(/\s+/g,' ')}|${String(group||'').trim().toLowerCase()}`;
+}
+function historicalPeriodsFromRows(rows){
+  const periods=[
+    {key:'2024-25',label:'2024–25',start:'2024-06-01',end:'2025-05-31'},
+    {key:'2025-26',label:'2025–26',start:'2025-06-01',end:'2026-05-31'}
+  ];
+  return periods.map(p=>({...p,rows:rows.filter(r=>r.attendance_date>=p.start&&r.attendance_date<=p.end)})).filter(p=>p.rows.length);
+}
+function consecutiveRun(rows,target){
+  const ordered=rows.filter(r=>['Present','Absent'].includes(statusNorm(r.status))).slice().sort((a,b)=>b.attendance_date.localeCompare(a.attendance_date));
+  let n=0;
+  for(const r of ordered){if(statusNorm(r.status)===target)n++;else break}
+  return n;
+}
+function bestPresentRun(rows){
+  const ordered=rows.filter(r=>['Present','Absent'].includes(statusNorm(r.status))).slice().sort((a,b)=>a.attendance_date.localeCompare(b.attendance_date));
+  let best=0,n=0;
+  for(const r of ordered){if(statusNorm(r.status)==='Present'){n++;best=Math.max(best,n)}else n=0}
+  return best;
+}
+function buildHistoricalSummary(period){
+  const rows=period.rows.filter(r=>['Present','Absent'].includes(statusNorm(r.status)));
+  const latest=[...new Set(rows.map(r=>r.attendance_date))].sort().pop()||'';
+  const latestRows=latest?rows.filter(r=>r.attendance_date===latest):[];
+  const months={};
+  for(const r of rows){
+    const k=r.attendance_date.slice(0,7);
+    (months[k]??=[]).push(r);
+  }
+  const monthly_trend=Object.keys(months).sort().map(k=>({month:k,rate:calcRate(months[k]),records:months[k].length}));
+  const groups=[...new Set(rows.map(r=>r.group_name).filter(Boolean))].sort();
+  const class_summary=groups.map(g=>({group_name:g,attendance_rate:calcRate(rows.filter(r=>r.group_name===g)),records:rows.filter(r=>r.group_name===g).length}));
+  const peopleMap=new Map();
+  for(const r of rows){
+    const key=r.person_key||historicalPersonKey(r.person_name,r.group_name);
+    if(!peopleMap.has(key))peopleMap.set(key,{person_key:key,name:r.person_name,group_name:r.group_name,role:r.role||'Student',rows:[]});
+    peopleMap.get(key).rows.push(r);
+  }
+  const people_summary=[...peopleMap.values()].map(p=>({
+    person_key:p.person_key,
+    name:p.name,
+    group_name:p.group_name,
+    role:p.role,
+    attendance_rate:calcRate(p.rows),
+    present:p.rows.filter(x=>statusNorm(x.status)==='Present').length,
+    absent:p.rows.filter(x=>statusNorm(x.status)==='Absent').length,
+    current_streak:consecutiveRun(p.rows,'Present'),
+    absence_streak:consecutiveRun(p.rows,'Absent'),
+    best_streak:bestPresentRun(p.rows)
+  }));
+  const students=people_summary.filter(p=>String(p.role||'Student').toLowerCase()==='student');
+  const follow_up=students.filter(p=>p.absence_streak>=(cfg.chronicAbsenceThreshold||3)).sort((a,b)=>b.absence_streak-a.absence_streak).slice(0,12);
+  const streaks=students.filter(p=>p.current_streak>0).sort((a,b)=>b.current_streak-a.current_streak).slice(0,12);
+  return {
+    period_key:period.key,label:period.label,start_date:period.start,end_date:period.end,
+    total_records:rows.length,unique_people:people_summary.length,unique_students:students.length,
+    total_classes:groups.length,overall_attendance_rate:calcRate(rows),latest_sunday:latest,
+    latest_sunday_rate:calcRate(latestRows),monthly_trend,class_summary,follow_up,streaks,
+    people_summary,generated_at:new Date().toISOString()
+  };
+}
+async function loadHistoricalSummaryIndex(force=false){
+  if(S.demo||S.profile?.role!=='admin'){S.historicalSummaries=[];return}
+  if(S.historicalSummaries.length&&!force)return;
+  try{
+    const snap=await getDocs(collection(db,'historical_summaries'));
+    S.historicalSummaries=snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.start_date||'').localeCompare(a.start_date||''));
+  }catch(e){
+    console.warn('Could not load historical summary index',e);
+    S.historicalSummaries=[];
+  }
+}
+function dashboardPeriods(){
+  const current=academicBounds();
+  return [
+    {key:'current',label:`${current.label} (Current)`,start:current.start,end:current.end,current:true},
+    ...(S.profile?.role==='admin'?S.historicalSummaries.map(s=>({key:s.period_key||s.id,label:s.label||s.period_key,start:s.start_date,end:s.end_date,current:false})):[])
+  ];
+}
+async function selectDashboardPeriod(key){
+  S.dashboardPeriod=key||'current';
+  if(S.dashboardPeriod==='current'){S.dashboardSummary=null;renderDashboard();return}
+  const cached=S.historicalSummaries.find(s=>(s.period_key||s.id)===S.dashboardPeriod);
+  if(cached?.people_summary){S.dashboardSummary=cached;renderDashboard();return}
+  try{
+    const snap=await getDoc(doc(db,'historical_summaries',S.dashboardPeriod));
+    S.dashboardSummary=snap.exists()?{id:snap.id,...snap.data()}:null;
+  }catch(e){S.dashboardSummary=null;toast('Could not load that academic year: '+friendlyError(e))}
+  renderDashboard();
+}
+
+async function loadCloud(){const user=auth.currentUser;if(!user){S.user=S.profile=null;S.people=[];S.attendance=[];return}S.user={id:user.uid,email:user.email};S.profile=await ensureProfile(user);await loadAcademicYearConfig();await loadPublicSummary();S.classes=Array.isArray(S.profile.allowed_groups)?S.profile.allowed_groups:[];const scope=S.profile.role==='admin'?null:S.classes;S.people=(await getCollectionRows('people',scope)).sort((a,b)=>(a.group_name||'').localeCompare(b.group_name||'')||(a.name||'').localeCompare(b.name||''));S.attendance=(await getCollectionRows('attendance',scope)).sort((a,b)=>(a.attendance_date||'').localeCompare(b.attendance_date||''));if(S.profile.role==='admin'){const us=await getDocs(collection(db,'profiles'));S.users=us.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.full_name||'').localeCompare(b.full_name||''));S.assignments=S.users.flatMap(u=>(u.allowed_groups||[]).map(g=>({user_id:u.id,group_name:g})));await loadHistoricalSummaryIndex()}else{S.users=[];S.assignments=[];S.auditLogs=[];S.auditCursor=null;S.auditHasMore=false;S.historicalSummaries=[]}autoBackup('cloud-sync')}
 async function init(){S.selectedDate=sundayOnOrBefore();const b=academicBounds();S.reportFrom=b.start;S.reportTo=Math.min(b.end,iso(new Date()));bindStatic();if(configured){const app=initializeApp(cfg.firebase);auth=getAuth(app);db=getFirestore(app);onAuthStateChanged(auth,async()=>{try{await loadCloud();const ay=academicBounds();S.reportFrom=ay.start;S.reportTo=Math.min(ay.end,iso(new Date()));setAuthUI()}catch(e){console.error(e);toast('Could not load Firebase data: '+friendlyError(e))}})}setAuthUI()}
 function bindStatic(){
  $('#loginForm').addEventListener('submit',async e=>{e.preventDefault();if(!configured)return;try{await signInWithEmailAndPassword(auth,$('#loginEmail').value.trim(),$('#loginPassword').value)}catch(err){toast(friendlyError(err))}});
@@ -363,19 +462,129 @@ function calcRate(records){const marked=records.filter(a=>['Present','Absent'].i
 function historyForPerson(id,start,end){return S.attendance.filter(a=>String(a.person_id)===String(id)&&(!start||a.attendance_date>=start)&&(!end||a.attendance_date<=end)).sort((a,b)=>a.attendance_date.localeCompare(b.attendance_date))}
 function streak(id,kind='current'){const h=historyForPerson(id).filter(a=>['Present','Absent'].includes(statusNorm(a.status))).sort((a,b)=>b.attendance_date.localeCompare(a.attendance_date));if(!h.length)return 0;if(kind==='current'){let n=0;for(const a of h){if(statusNorm(a.status)==='Present')n++;else break}return n}let best=0,n=0;for(const a of [...h].reverse()){if(statusNorm(a.status)==='Present'){n++;best=Math.max(best,n)}else n=0}return best}
 function absenceStreak(id){const h=historyForPerson(id).filter(a=>['Present','Absent'].includes(statusNorm(a.status))).sort((a,b)=>b.attendance_date.localeCompare(a.attendance_date));let n=0;for(const a of h){if(statusNorm(a.status)==='Absent')n++;else break}return n}
-function renderDashboard(){const b=academicBounds(), groups=allowedGroups(), ids=new Set(S.people.filter(p=>p.active&&groups.includes(p.group_name)).map(p=>String(p.id))), ay=S.attendance.filter(a=>ids.has(String(a.person_id))&&a.attendance_date>=b.start&&a.attendance_date<=b.end), latest=[...new Set(ay.map(a=>a.attendance_date))].sort().pop(), latestRows=latest?ay.filter(a=>a.attendance_date===latest):[];const students=S.people.filter(p=>p.active&&groups.includes(p.group_name)&&p.role==='Student');const follow=students.map(p=>({p,n:absenceStreak(p.id)})).filter(x=>x.n>=(cfg.chronicAbsenceThreshold||3)).sort((a,b)=>b.n-a.n);const streaks=students.map(p=>({p,n:streak(p.id)})).filter(x=>x.n).sort((a,b)=>b.n-a.n).slice(0,7);let classRates=groups.map(g=>{const pids=new Set(S.people.filter(p=>p.active&&p.group_name===g).map(p=>String(p.id)));return {g,rate:calcRate(ay.filter(a=>pids.has(String(a.person_id))))}});
- $('#content').innerHTML=`<section class="hero-strip"><div><p class="eyebrow">${esc(b.label)}</p><h3>Good ${new Date().getHours()<12?'morning':new Date().getHours()<17?'afternoon':'evening'}, ${esc((S.profile.full_name||'').split(' ')[0])}</h3><p>${S.profile.role==='admin'?'A clear view of attendance, follow-ups and every class.':`Your assigned classes: ${esc(groups.join(', ')||'awaiting assignment')}.`}</p></div><div class="hero-actions"><button class="btn primary" id="quickAttendance">Mark attendance</button><button class="btn secondary" id="quickReport">Reports</button></div></section>
- <div class="stats"><div class="stat-card"><span>Active students</span><strong>${students.length}</strong><small>${groups.length} class${groups.length===1?'':'es'} in view</small></div><div class="stat-card"><span>${esc(b.label)} attendance</span><strong>${calcRate(ay)}%</strong><small>${ay.length} marked records</small></div><div class="stat-card"><span>Latest Sunday</span><strong>${latest?calcRate(latestRows)+'%':'—'}</strong><small>${latest?fmtDate(latest):'No attendance yet'}</small></div><div class="stat-card"><span>Follow-up alerts</span><strong>${follow.length}</strong><small>${cfg.chronicAbsenceThreshold||3}+ consecutive absences</small></div></div>
- <div class="grid-2"><section class="panel"><div class="panel-head"><div><h3>Class comparison</h3><p class="muted tiny">Attendance across ${esc(b.label)}</p></div></div><div class="class-bars">${classRates.length?classRates.map(x=>`<div class="bar-row"><span>${esc(x.g)}</span><div class="track"><div class="fill" style="width:${x.rate}%"></div></div><b>${x.rate}%</b></div>`).join(''):'<div class="empty">No assigned classes yet.</div>'}</div></section>
- <section class="panel"><div class="panel-head"><div><h3>Needs a check-in</h3><p class="muted tiny">Consecutive recorded absences</p></div></div><div class="alert-list">${follow.length?follow.slice(0,7).map(x=>personRow(x.p,`<span class="badge bad">${x.n} Sundays</span>`)).join(''):'<div class="empty">No chronic-absence alerts 🎉</div>'}</div></section></div>
- <div class="grid-equal" style="margin-top:18px"><section class="panel"><div class="panel-head"><div><h3>Current attendance streaks</h3><p class="muted tiny">Students with consecutive presents</p></div></div><div class="streak-list">${streaks.length?streaks.map(x=>personRow(x.p,`<span class="badge good">${x.n} in a row</span>`)).join(''):'<div class="empty">Streaks will appear after more Sundays are marked.</div>'}</div></section><section class="panel"><div class="panel-head"><div><h3>Monthly trend</h3><p class="muted tiny">${esc(b.label)} overall attendance</p></div></div>${monthlyChart(ay,b)}</section></div>`;
- $('#quickAttendance').onclick=()=>switchView('attendance');$('#quickReport').onclick=()=>switchView('reports');bindProfileLinks();}
+function renderDashboard(){
+  const periods=dashboardPeriods();
+  if(!periods.some(p=>p.key===S.dashboardPeriod))S.dashboardPeriod='current';
+
+  if(S.dashboardPeriod!=='current'){
+    const s=S.dashboardSummary||S.historicalSummaries.find(x=>(x.period_key||x.id)===S.dashboardPeriod);
+    if(!s){
+      $('#content').innerHTML=`<section class="panel"><div class="toolbar"><label class="field"><span>Academic year</span><select id="dashboardPeriod">${periods.map(p=>`<option value="${esc(p.key)}" ${p.key===S.dashboardPeriod?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label></div><div class="empty">Loading historical analytics…</div></section>`;
+      $('#dashboardPeriod').onchange=e=>selectDashboardPeriod(e.target.value);
+      selectDashboardPeriod(S.dashboardPeriod);
+      return;
+    }
+    renderHistoricalDashboard(s,periods);
+    return;
+  }
+
+  const b=academicBounds(), groups=allowedGroups(), ids=new Set(S.people.filter(p=>p.active&&groups.includes(p.group_name)).map(p=>String(p.id))),
+    ay=S.attendance.filter(a=>ids.has(String(a.person_id))&&a.attendance_date>=b.start&&a.attendance_date<=b.end),
+    latest=[...new Set(ay.map(a=>a.attendance_date))].sort().pop(), latestRows=latest?ay.filter(a=>a.attendance_date===latest):[];
+  const students=S.people.filter(p=>p.active&&groups.includes(p.group_name)&&p.role==='Student');
+  const follow=students.map(p=>({p,n:absenceStreak(p.id)})).filter(x=>x.n>=(cfg.chronicAbsenceThreshold||3)).sort((a,b)=>b.n-a.n);
+  const streaks=students.map(p=>({p,n:streak(p.id)})).filter(x=>x.n).sort((a,b)=>b.n-a.n).slice(0,7);
+  let classRates=groups.map(g=>{const pids=new Set(S.people.filter(p=>p.active&&p.group_name===g).map(p=>String(p.id)));return {g,rate:calcRate(ay.filter(a=>pids.has(String(a.person_id))))}});
+
+  $('#content').innerHTML=`<section class="hero-strip"><div><div class="toolbar" style="padding:0;margin-bottom:10px"><label class="field"><span>Academic year</span><select id="dashboardPeriod">${periods.map(p=>`<option value="${esc(p.key)}" ${p.key===S.dashboardPeriod?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label></div><p class="eyebrow">${esc(b.label)}</p><h3>Good ${new Date().getHours()<12?'morning':new Date().getHours()<17?'afternoon':'evening'}, ${esc((S.profile.full_name||'').split(' ')[0])}</h3><p>${S.profile.role==='admin'?'A clear view of attendance, follow-ups and every class.':`Your assigned classes: ${esc(groups.join(', ')||'awaiting assignment')}.`}</p></div><div class="hero-actions"><button class="btn primary" id="quickAttendance">Mark attendance</button><button class="btn secondary" id="quickReport">Reports</button></div></section>
+  <div class="stats"><div class="stat-card"><span>Active students</span><strong>${students.length}</strong><small>${groups.length} class${groups.length===1?'':'es'} in view</small></div><div class="stat-card"><span>${esc(b.label)} attendance</span><strong>${calcRate(ay)}%</strong><small>${ay.length} marked records</small></div><div class="stat-card"><span>Latest Sunday</span><strong>${latest?calcRate(latestRows)+'%':'—'}</strong><small>${latest?fmtDate(latest):'No attendance yet'}</small></div><div class="stat-card"><span>Follow-up alerts</span><strong>${follow.length}</strong><small>${cfg.chronicAbsenceThreshold||3}+ consecutive absences</small></div></div>
+  <div class="grid-2"><section class="panel"><div class="panel-head"><div><h3>Class comparison</h3><p class="muted tiny">Attendance across ${esc(b.label)}</p></div></div><div class="class-bars">${classRates.length?classRates.map(x=>`<div class="bar-row"><span>${esc(x.g)}</span><div class="track"><div class="fill" style="width:${x.rate}%"></div></div><b>${x.rate}%</b></div>`).join(''):'<div class="empty">No assigned classes yet.</div>'}</div></section>
+  <section class="panel"><div class="panel-head"><div><h3>Needs a check-in</h3><p class="muted tiny">Consecutive recorded absences</p></div></div><div class="alert-list">${follow.length?follow.slice(0,7).map(x=>personRow(x.p,`<span class="badge bad">${x.n} Sundays</span>`)).join(''):'<div class="empty">No chronic-absence alerts 🎉</div>'}</div></section></div>
+  <div class="grid-equal" style="margin-top:18px"><section class="panel"><div class="panel-head"><div><h3>Current attendance streaks</h3><p class="muted tiny">Students with consecutive presents</p></div></div><div class="streak-list">${streaks.length?streaks.map(x=>personRow(x.p,`<span class="badge good">${x.n} in a row</span>`)).join(''):'<div class="empty">Streaks will appear after more Sundays are marked.</div>'}</div></section><section class="panel"><div class="panel-head"><div><h3>Monthly trend</h3><p class="muted tiny">${esc(b.label)} overall attendance</p></div></div>${monthlyChart(ay,b)}</section></div>`;
+  $('#dashboardPeriod').onchange=e=>selectDashboardPeriod(e.target.value);
+  $('#quickAttendance').onclick=()=>switchView('attendance');$('#quickReport').onclick=()=>switchView('reports');bindProfileLinks();
+}
+function renderHistoricalDashboard(s,periods){
+  const classRates=(s.class_summary||[]).map(x=>({g:x.group_name,rate:Number(x.attendance_rate||0)}));
+  const follow=s.follow_up||[], streaks=s.streaks||[];
+  $('#content').innerHTML=`<section class="hero-strip"><div><div class="toolbar" style="padding:0;margin-bottom:10px"><label class="field"><span>Academic year</span><select id="dashboardPeriod">${periods.map(p=>`<option value="${esc(p.key)}" ${p.key===S.dashboardPeriod?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label></div><p class="eyebrow">${esc(s.label||S.dashboardPeriod)} historical analytics</p><h3>${esc(s.label||S.dashboardPeriod)} Sunday School overview</h3><p>Historical charts are calculated from the archived attendance you imported. Opening this dashboard reads one small summary document, not thousands of attendance records.</p></div><div class="hero-actions"><button class="btn secondary" id="historicalReportBtn">Open report</button></div></section>
+  <div class="stats"><div class="stat-card"><span>Students recorded</span><strong>${Number(s.unique_students||0)}</strong><small>${Number(s.total_classes||0)} classes in the archive</small></div><div class="stat-card"><span>${esc(s.label||'Historical')} attendance</span><strong>${Number(s.overall_attendance_rate||0)}%</strong><small>${Number(s.total_records||0)} marked records</small></div><div class="stat-card"><span>Latest recorded Sunday</span><strong>${s.latest_sunday?Number(s.latest_sunday_rate||0)+'%':'—'}</strong><small>${s.latest_sunday?fmtDate(s.latest_sunday):'No attendance'}</small></div><div class="stat-card"><span>Follow-up alerts</span><strong>${follow.length}</strong><small>${cfg.chronicAbsenceThreshold||3}+ consecutive absences at period end</small></div></div>
+  <div class="grid-2"><section class="panel"><div class="panel-head"><div><h3>Class comparison</h3><p class="muted tiny">${esc(s.label||'Historical year')} aggregate attendance</p></div></div><div class="class-bars">${classRates.length?classRates.map(x=>`<div class="bar-row"><span>${esc(x.g)}</span><div class="track"><div class="fill" style="width:${x.rate}%"></div></div><b>${x.rate}%</b></div>`).join(''):'<div class="empty">No class data.</div>'}</div></section>
+  <section class="panel"><div class="panel-head"><div><h3>Needs a check-in</h3><p class="muted tiny">Consecutive absences at the end of this historical period</p></div></div><div class="alert-list">${follow.length?follow.slice(0,7).map(x=>historicalPersonRow(x,`<span class="badge bad">${x.absence_streak} Sundays</span>`)).join(''):'<div class="empty">No chronic-absence alerts in this period.</div>'}</div></section></div>
+  <div class="grid-equal" style="margin-top:18px"><section class="panel"><div class="panel-head"><div><h3>Attendance streaks</h3><p class="muted tiny">Consecutive presents at the end of this historical period</p></div></div><div class="streak-list">${streaks.length?streaks.slice(0,7).map(x=>historicalPersonRow(x,`<span class="badge good">${x.current_streak} in a row</span>`)).join(''):'<div class="empty">No ending streaks recorded.</div>'}</div></section><section class="panel"><div class="panel-head"><div><h3>Monthly trend</h3><p class="muted tiny">${esc(s.label||'Historical year')} overall attendance</p></div></div>${historicalMonthlyChart(s.monthly_trend||[])}</section></div>
+  <section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Year snapshot</h3><p class="muted tiny">Click a student in the lists above to open their archived profile for this period.</p></div></div><div class="notice">Historical records remain private. They are not included in the public parent dashboard unless you deliberately publish aggregate figures.</div></section>`;
+  $('#dashboardPeriod').onchange=e=>selectDashboardPeriod(e.target.value);
+  $('#historicalReportBtn').onclick=()=>{S.reportFrom=s.start_date;S.reportTo=s.end_date;S.reportGroup='all';switchView('reports')};
+  bindHistoricalProfileLinks(s);
+}
+function historicalMonthlyChart(months){
+  if(!months.length)return '<div class="empty">No monthly trend available.</div>';
+  return `<div class="chart">${months.map(m=>{const r=Number(m.rate||0),d=parseDate(m.month+'-01');return `<div class="chart-col"><div class="column" style="height:${Math.max(4,r*1.7)}px" title="${r}%"></div><small>${d.toLocaleDateString('en-IN',{month:'short'})}</small></div>`}).join('')}</div>`;
+}
+function historicalPersonRow(p,end=''){
+  return `<div class="person-row"><div class="avatar">${initials(p.name)}</div><div class="meta"><button class="link-btn historical-profile-link" data-key="${esc(p.person_key)}"><b>${esc(p.name)}</b></button><small>${esc(p.group_name||'')}</small></div>${end}</div>`;
+}
+function bindHistoricalProfileLinks(summary){
+  $$('.historical-profile-link').forEach(b=>b.onclick=()=>showHistoricalProfile(b.dataset.key,summary));
+}
+async function showHistoricalProfile(personKey,summary){
+  const base=(summary.people_summary||[]).find(p=>p.person_key===personKey);
+  if(!base)return;
+  showModal(`<div class="profile-head"><div class="avatar">${initials(base.name)}</div><div><p class="eyebrow">${esc(base.group_name||'Historical')}</p><h3 style="margin:0">${esc(base.name)}</h3><p class="muted tiny">Loading ${esc(summary.label||'historical')} attendance…</p></div></div><div class="empty">Loading profile…</div>`);
+  try{
+    const snap=await getDocs(query(collection(db,'historical_attendance'),where('person_key','==',personKey)));
+    const h=snap.docs.map(d=>d.data()).filter(r=>r.attendance_date>=summary.start_date&&r.attendance_date<=summary.end_date&&['Present','Absent'].includes(statusNorm(r.status))).sort((a,b)=>a.attendance_date.localeCompare(b.attendance_date));
+    const rate=calcRate(h),cur=consecutiveRun(h,'Present'),best=bestPresentRun(h);
+    showModal(`<div class="profile-head"><div class="avatar">${initials(base.name)}</div><div><p class="eyebrow">${esc(base.group_name||'Historical')}</p><h3 style="margin:0">${esc(base.name)}</h3><p class="muted tiny">${esc(base.role||'Student')} · ${esc(summary.label||'')}</p></div></div><div class="profile-kpis"><div class="profile-kpi"><span>Attendance</span><b>${rate}%</b></div><div class="profile-kpi"><span>Present</span><b>${h.filter(x=>statusNorm(x.status)==='Present').length}</b></div><div class="profile-kpi"><span>Ending streak</span><b>${cur}</b></div><div class="profile-kpi"><span>Best streak</span><b>${best}</b></div></div><h4 style="margin:22px 0 8px">${esc(summary.label||'Historical')} history</h4><div class="table-wrap"><table style="min-width:0"><thead><tr><th>Date</th><th>Class</th><th>Status</th></tr></thead><tbody>${h.slice().sort((a,b)=>b.attendance_date.localeCompare(a.attendance_date)).map(a=>`<tr><td>${fmtDate(a.attendance_date)}</td><td>${esc(a.group_name||'')}</td><td><span class="badge ${statusNorm(a.status)==='Present'?'good':'bad'}">${statusNorm(a.status)}</span></td></tr>`).join('')||'<tr><td colspan="3" class="empty">No attendance in this period.</td></tr>'}</tbody></table></div>`);
+  }catch(e){showModal(`<h3>${esc(base.name)}</h3><div class="notice">Could not load historical profile: ${esc(friendlyError(e))}</div>`)}
+}
 function personRow(p,end=''){return `<div class="person-row"><div class="avatar">${initials(p.name)}</div><div class="meta"><button class="link-btn profile-link" data-id="${p.id}"><b>${esc(p.name)}</b></button><small>${esc(p.group_name)}</small></div>${end}</div>`}
 function monthlyChart(rows,b){let buckets={};rows.forEach(a=>{let k=a.attendance_date.slice(0,7);(buckets[k]??=[]).push(a)});let keys=Object.keys(buckets).sort();if(!keys.length)return '<div class="empty">Mark more Sundays to build the trend.</div>';return `<div class="chart">${keys.map(k=>{let r=calcRate(buckets[k]);let d=parseDate(k+'-01');return `<div class="chart-col"><div class="column" style="height:${Math.max(4,r*1.7)}px" title="${r}%"></div><small>${d.toLocaleDateString('en-IN',{month:'short'})}</small></div>`}).join('')}</div>`}
-function renderAttendance(){const groups=allowedGroups();if(!S.selectedGroup||!groups.includes(S.selectedGroup))S.selectedGroup=groups[0]||'';const roster=S.people.filter(p=>p.active&&p.group_name===S.selectedGroup).sort((a,b)=>a.name.localeCompare(b.name));S.attendanceDraft={};roster.forEach(p=>S.attendanceDraft[p.id]=statusNorm(attendanceFor(p,S.selectedDate)?.status));const isSun=parseDate(S.selectedDate).getDay()===0;$('#content').innerHTML=`${!groups.length?'<div class="notice">Your account has no assigned classes yet. Ask the Sunday School admin to assign one.</div>':''}<div class="toolbar"><label class="field"><span>Sunday date</span><input type="date" id="attDate" value="${S.selectedDate}"></label><label class="field grow"><span>Class</span><select id="attGroup">${groups.map(g=>`<option ${g===S.selectedGroup?'selected':''}>${esc(g)}</option>`).join('')}</select></label><button class="btn ghost" id="allPresent">All present</button><button class="btn ghost" id="allAbsent">All absent</button></div>${!isSun?'<div class="notice">This date is not a Sunday. You can review it, but saving is disabled until you select a Sunday.</div>':''}<div class="attendance-head"><div><h3 style="margin:0;font-family:'Playfair Display',serif">${esc(S.selectedGroup||'No class')}</h3><p class="muted tiny">${fmtDate(S.selectedDate,{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}</p></div><div class="attendance-summary"><span class="summary-pill" id="presentCount"></span><span class="summary-pill" id="absentCount"></span><span class="summary-pill" id="unmarkedCount"></span></div></div><div class="roster" id="roster">${roster.map(attCard).join('')||'<div class="empty">No people in this class.</div>'}</div><div class="save-bar"><span class="muted tiny">Your selections stay only on this screen until you review and confirm.</span><button class="btn primary" id="saveAttendance" ${!isSun||!roster.length?'disabled':''}>Save attendance</button></div>`;bindAttendance();updateCounts()}
-function attCard(p){const st=S.attendanceDraft[p.id];return `<div class="attendance-card"><div class="avatar">${initials(p.name)}</div><div class="meta"><b>${esc(p.name)}</b><small>${esc(p.role)}</small></div><div class="status-toggle" data-id="${p.id}"><button class="present ${st==='Present'?'active':''}" data-status="Present">Present</button><button class="absent ${st==='Absent'?'active':''}" data-status="Absent">Absent</button></div></div>`}
-function bindAttendance(){$('#attDate').onchange=e=>{S.selectedDate=e.target.value;renderAttendance()};$('#attGroup').onchange=e=>{S.selectedGroup=e.target.value;renderAttendance()};$('#roster').onclick=e=>{const b=e.target.closest('[data-status]');if(!b)return;const id=b.parentElement.dataset.id;S.attendanceDraft[id]=b.dataset.status;renderAttendance()};$('#allPresent').onclick=()=>{Object.keys(S.attendanceDraft).forEach(id=>S.attendanceDraft[id]='Present');renderAttendance()};$('#allAbsent').onclick=()=>{Object.keys(S.attendanceDraft).forEach(id=>S.attendanceDraft[id]='Absent');renderAttendance()};$('#saveAttendance').onclick=reviewAttendanceBeforeSave}
-function updateCounts(){const vals=Object.values(S.attendanceDraft);$('#presentCount').textContent=`${vals.filter(x=>x==='Present').length} present`;$('#absentCount').textContent=`${vals.filter(x=>x==='Absent').length} absent`;$('#unmarkedCount').textContent=`${vals.filter(x=>x==='Unmarked').length} unmarked`}
+function renderAttendance(resetDraft=true){
+  const groups=allowedGroups();
+  if(!S.selectedGroup||!groups.includes(S.selectedGroup))S.selectedGroup=groups[0]||'';
+  const roster=S.people.filter(p=>p.active&&p.group_name===S.selectedGroup).sort((a,b)=>a.name.localeCompare(b.name));
+  if(resetDraft){
+    S.attendanceDraft={};
+    roster.forEach(p=>S.attendanceDraft[String(p.id)]=statusNorm(attendanceFor(p,S.selectedDate)?.status));
+  }
+  const isSun=parseDate(S.selectedDate).getDay()===0;
+  $('#content').innerHTML=`${!groups.length?'<div class="notice">Your account has no assigned classes yet. Ask the Sunday School admin to assign one.</div>':''}<div class="toolbar"><label class="field"><span>Sunday date</span><input type="date" id="attDate" value="${S.selectedDate}"></label><label class="field grow"><span>Class</span><select id="attGroup">${groups.map(g=>`<option ${g===S.selectedGroup?'selected':''}>${esc(g)}</option>`).join('')}</select></label><button class="btn ghost" id="allPresent" type="button">All present</button><button class="btn ghost" id="allAbsent" type="button">All absent</button></div>${!isSun?'<div class="notice">This date is not a Sunday. You can review it, but saving is disabled until you select a Sunday.</div>':''}<div class="attendance-head"><div><h3 style="margin:0;font-family:'Playfair Display',serif">${esc(S.selectedGroup||'No class')}</h3><p class="muted tiny">${fmtDate(S.selectedDate,{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}</p></div><div class="attendance-summary"><span class="summary-pill" id="presentCount"></span><span class="summary-pill" id="absentCount"></span><span class="summary-pill" id="unmarkedCount"></span></div></div><div class="roster" id="roster">${roster.map(attCard).join('')||'<div class="empty">No people in this class.</div>'}</div><div class="save-bar"><span class="muted tiny">Your selections stay only on this screen until you review and confirm.</span><button class="btn primary" id="saveAttendance" type="button" ${!isSun||!roster.length?'disabled':''}>Save attendance</button></div>`;
+  bindAttendance();
+  updateCounts();
+}
+function attCard(p){
+  const st=S.attendanceDraft[String(p.id)]||'Unmarked';
+  return `<div class="attendance-card"><div class="avatar">${initials(p.name)}</div><div class="meta"><b>${esc(p.name)}</b><small>${esc(p.role)}</small></div><div class="status-toggle" data-id="${p.id}"><button type="button" class="present ${st==='Present'?'active':''}" data-status="Present" aria-pressed="${st==='Present'}">Present</button><button type="button" class="absent ${st==='Absent'?'active':''}" data-status="Absent" aria-pressed="${st==='Absent'}">Absent</button></div></div>`;
+}
+function paintAttendanceToggle(toggle,status){
+  if(!toggle)return;
+  toggle.querySelectorAll('[data-status]').forEach(btn=>{
+    const active=btn.dataset.status===status;
+    btn.classList.toggle('active',active);
+    btn.setAttribute('aria-pressed',active?'true':'false');
+  });
+}
+function bindAttendance(){
+  $('#attDate').onchange=e=>{S.selectedDate=e.target.value;renderAttendance(true)};
+  $('#attGroup').onchange=e=>{S.selectedGroup=e.target.value;renderAttendance(true)};
+  $('#roster').onclick=e=>{
+    const b=e.target.closest('button[data-status]');
+    if(!b)return;
+    const toggle=b.closest('.status-toggle');
+    const id=String(toggle.dataset.id);
+    S.attendanceDraft[id]=b.dataset.status;
+    paintAttendanceToggle(toggle,b.dataset.status);
+    updateCounts();
+  };
+  $('#allPresent').onclick=()=>{
+    Object.keys(S.attendanceDraft).forEach(id=>S.attendanceDraft[id]='Present');
+    $$('#roster .status-toggle').forEach(t=>paintAttendanceToggle(t,'Present'));
+    updateCounts();
+  };
+  $('#allAbsent').onclick=()=>{
+    Object.keys(S.attendanceDraft).forEach(id=>S.attendanceDraft[id]='Absent');
+    $$('#roster .status-toggle').forEach(t=>paintAttendanceToggle(t,'Absent'));
+    updateCounts();
+  };
+  $('#saveAttendance').onclick=reviewAttendanceBeforeSave;
+}
+function updateCounts(){
+  const vals=Object.values(S.attendanceDraft);
+  if($('#presentCount'))$('#presentCount').textContent=`${vals.filter(x=>x==='Present').length} present`;
+  if($('#absentCount'))$('#absentCount').textContent=`${vals.filter(x=>x==='Absent').length} absent`;
+  if($('#unmarkedCount'))$('#unmarkedCount').textContent=`${vals.filter(x=>x==='Unmarked').length} unmarked`;
+}
 function reviewAttendanceBeforeSave(){
   const vals=Object.values(S.attendanceDraft);
   const present=vals.filter(x=>x==='Present').length;
@@ -388,9 +597,93 @@ function reviewAttendanceBeforeSave(){
 async function saveAttendance(){const peopleMap=new Map(S.people.map(p=>[String(p.id),p]));const rows=Object.entries(S.attendanceDraft).filter(([,st])=>st!=='Unmarked').map(([id,status])=>{const p=peopleMap.get(String(id));return {person_id:Number(id),person_doc:String(id),group_name:p?.group_name||S.selectedGroup,attendance_date:S.selectedDate,status,marked_by:S.user?.id||'',updated_at:new Date().toISOString()}});const changes=rows.map(r=>{const prev=attendanceFor({id:r.person_id},r.attendance_date);return {person_id:r.person_id,name:peopleMap.get(String(r.person_id))?.name||String(r.person_id),before:prev?statusNorm(prev.status):'Unmarked',after:r.status}}).filter(c=>c.before!==c.after);if(S.demo){for(const r of rows){const i=S.attendance.findIndex(a=>String(a.person_id)===String(r.person_id)&&a.attendance_date===r.attendance_date);if(i>=0)S.attendance[i]={...S.attendance[i],...r};else S.attendance.push({...r,id:`local-${Date.now()}-${r.person_id}`})}localSave();toast('Attendance saved in this browser');renderAttendance();return}try{const batch=writeBatch(db);for(const r of rows){batch.set(doc(db,'attendance',`${r.person_id}_${r.attendance_date}`),r,{merge:true})}if(changes.length){batch.set(doc(collection(db,'audit_logs')),auditDoc('attendance_update','attendance',`${S.selectedGroup}_${S.selectedDate}`,`${S.profile.full_name||S.user?.email||'User'} updated ${changes.length} attendance entr${changes.length===1?'y':'ies'} for ${S.selectedGroup}`,{attendance_date:S.selectedDate,group_name:S.selectedGroup,changes}))}await batch.commit();await loadCloud();toast(changes.length?'Attendance saved and logged':'No attendance changes to log');renderAttendance()}catch(err){console.error(err);toast(friendlyError(err))}}
 function renderPeople(){if(S.profile.role!=='admin')return switchView('dashboard');const groups=[...new Set(S.people.map(p=>p.group_name))].sort();$('#content').innerHTML=`<div class="toolbar"><label class="field grow"><span>Search people</span><input id="peopleSearch" placeholder="Search name or class"></label><label class="field"><span>Class</span><select id="peopleGroup"><option value="all">All classes</option>${groups.map(g=>`<option>${esc(g)}</option>`).join('')}</select></label><button class="btn primary" id="addPerson">+ Add person</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Class</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody id="peopleBody"></tbody></table></div>`;const draw=()=>{let q=$('#peopleSearch').value.toLowerCase(),g=$('#peopleGroup').value;let rows=S.people.filter(p=>(g==='all'||p.group_name===g)&&(`${p.name} ${p.group_name}`.toLowerCase().includes(q)));$('#peopleBody').innerHTML=rows.map(p=>`<tr><td><button class="link-btn profile-link" data-id="${p.id}">${esc(p.name)}</button></td><td>${esc(p.group_name)}</td><td>${esc(p.role)}</td><td><span class="badge ${p.active?'good':'warn'}">${p.active?'Active':'Archived'}</span></td><td><button class="text-btn edit-person" data-id="${p.id}">Edit</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">No matching people.</td></tr>';bindProfileLinks();$$('.edit-person').forEach(b=>b.onclick=()=>openPerson(Number(b.dataset.id)));};$('#peopleSearch').oninput=draw;$('#peopleGroup').onchange=draw;$('#addPerson').onclick=()=>openPerson();draw()}
 function openPerson(id=null){const p=id?S.people.find(x=>x.id===id):null;const groups=[...new Set(S.people.map(x=>x.group_name))].sort();showModal(`<h3>${p?'Edit person':'Add person'}</h3><form id="personForm" class="form-stack"><label>Full name<input id="personName" required value="${esc(p?.name||'')}"></label><label>Class / group<input id="personGroup" list="groupList" required value="${esc(p?.group_name||'')}"><datalist id="groupList">${groups.map(g=>`<option value="${esc(g)}">`).join('')}</datalist></label><label>Role<select id="personRole"><option ${p?.role==='Student'?'selected':''}>Student</option><option ${p?.role==='Teacher'?'selected':''}>Teacher</option><option ${p?.role==='Volunteer'?'selected':''}>Volunteer</option></select></label>${p?`<label class="check"><input id="personActive" type="checkbox" ${p.active?'checked':''}> Active on roster</label>`:''}<button class="btn primary" type="submit">${p?'Save changes':'Add person'}</button></form>`);$('#personForm').onsubmit=async e=>{e.preventDefault();const row={name:$('#personName').value.trim(),group_name:$('#personGroup').value.trim(),role:$('#personRole').value,active:p?$('#personActive').checked:true};if(S.demo){if(p)Object.assign(p,row);else S.people.push({...row,id:Math.max(0,...S.people.map(x=>Number(x.id)||0))+1});localSave()}else{try{const idVal=p?.id??(Math.max(0,...S.people.map(x=>Number(x.id)||0))+1);const personBatch=writeBatch(db);personBatch.set(doc(db,'people',String(idVal)),{...row,id:Number(idVal)},{merge:true});const changes=p?diffObject(p,row,['name','group_name','role','active']):[{field:'record',before:null,after:row}];personBatch.set(doc(collection(db,'audit_logs')),auditDoc(p?'person_update':'person_add','person',idVal,p?`Updated ${p.name}`:`Added ${row.name}`,{name_before:p?.name||null,name_after:row.name,changes}));await personBatch.commit();await loadCloud()}catch(err){return toast(friendlyError(err))}}closeModal();toast(p?'Person updated':'Person added');renderPeople()}}
-function renderReports(){const groups=allowedGroups();$('#content').innerHTML=`<section class="panel"><div class="panel-head"><div><h3>Attendance report</h3><p class="muted tiny">Choose any date range and class, then download the data.</p></div></div><div class="toolbar"><label class="field"><span>From</span><input id="reportFrom" type="date" value="${S.reportFrom}"></label><label class="field"><span>To</span><input id="reportTo" type="date" value="${S.reportTo}"></label><label class="field grow"><span>Class</span><select id="reportGroup"><option value="all">All permitted classes</option>${groups.map(g=>`<option ${S.reportGroup===g?'selected':''}>${esc(g)}</option>`).join('')}</select></label><button class="btn ghost" id="csvBtn">Download CSV</button><button class="btn primary" id="jsonBtn">Download JSON</button></div><div id="reportSummary"></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Name</th><th>Class</th><th>Status</th></tr></thead><tbody id="reportBody"></tbody></table></div></section>`;const draw=()=>{S.reportFrom=$('#reportFrom').value;S.reportTo=$('#reportTo').value;S.reportGroup=$('#reportGroup').value;let data=reportRows();$('#reportSummary').innerHTML=`<div class="stats"><div class="stat-card"><span>Records</span><strong>${data.length}</strong></div><div class="stat-card"><span>Attendance</span><strong>${calcRate(data)}%</strong></div><div class="stat-card"><span>Present</span><strong>${data.filter(x=>x.status==='Present').length}</strong></div><div class="stat-card"><span>Absent</span><strong>${data.filter(x=>x.status==='Absent').length}</strong></div></div>`;$('#reportBody').innerHTML=data.slice().sort((a,b)=>b.attendance_date.localeCompare(a.attendance_date)||a.name.localeCompare(b.name)).map(r=>`<tr><td>${fmtDate(r.attendance_date)}</td><td>${esc(r.name)}</td><td>${esc(r.group_name)}</td><td><span class="badge ${r.status==='Present'?'good':'bad'}">${r.status}</span></td></tr>`).join('')||'<tr><td colspan="4" class="empty">No attendance in this range.</td></tr>'};['reportFrom','reportTo','reportGroup'].forEach(id=>$('#'+id).onchange=draw);$('#csvBtn').onclick=()=>downloadCSV(reportRows());$('#jsonBtn').onclick=()=>downloadFile(`csi-attendance-${S.reportFrom}-to-${S.reportTo}.json`,JSON.stringify(reportRows(),null,2),'application/json');draw()}
-function reportRows(){const groups=allowedGroups(), people=new Map(S.people.map(p=>[String(p.id),p]));return S.attendance.map(a=>({...a,status:statusNorm(a.status),...(people.get(String(a.person_id))||{})})).filter(r=>groups.includes(r.group_name)&&r.attendance_date>=S.reportFrom&&r.attendance_date<=S.reportTo&&(S.reportGroup==='all'||r.group_name===S.reportGroup)&&['Present','Absent'].includes(r.status))}
-function downloadCSV(data){let rows=[['Date','Name','Class','Role','Status'],...data.map(r=>[r.attendance_date,r.name,r.group_name,r.role,r.status])];let csv=rows.map(r=>r.map(x=>'"'+String(x??'').replaceAll('"','""')+'"').join(',')).join('\n');downloadFile(`csi-attendance-${S.reportFrom}-to-${S.reportTo}.csv`,csv,'text/csv;charset=utf-8')}
+
+function currentReportRows(){
+  const people=new Map(S.people.map(p=>[String(p.id),p]));
+  return S.attendance.map(a=>{
+    const p=people.get(String(a.person_id))||{};
+    return {
+      ...a,
+      name:a.person_name||p.name||'Unknown',
+      role:a.role||p.role||'',
+      group_name:a.group_name||p.group_name||'',
+      status:statusNorm(a.status),
+      source:'Current database'
+    };
+  });
+}
+async function fetchHistoricalReport(from,to){
+  if(S.demo||S.profile?.role!=='admin'){S.reportHistorical=[];return []}
+  const q=query(
+    collection(db,'historical_attendance'),
+    where('attendance_date','>=',from),
+    where('attendance_date','<=',to)
+  );
+  const snap=await getDocs(q);
+  S.reportHistorical=snap.docs.map(d=>({
+    id:d.id,
+    ...d.data(),
+    name:d.data().person_name||'Unknown',
+    status:statusNorm(d.data().status),
+    source:'Historical archive'
+  }));
+  return S.reportHistorical;
+}
+
+function renderReports(){
+  const groups=reportGroupOptions();
+  $('#content').innerHTML=`<section class="panel"><div class="panel-head"><div><h3>Attendance report</h3><p class="muted tiny">Choose a date range, then load the report. Historical attendance is fetched only on demand to save Firestore reads.</p></div></div>
+  <div class="toolbar">
+    <label class="field"><span>From</span><input id="reportFrom" type="date" value="${S.reportFrom}"></label>
+    <label class="field"><span>To</span><input id="reportTo" type="date" value="${S.reportTo}"></label>
+    <label class="field grow"><span>Class</span><select id="reportGroup"><option value="all">All permitted classes</option>${groups.map(g=>`<option ${S.reportGroup===g?'selected':''}>${esc(g)}</option>`).join('')}</select></label>
+    <button class="btn secondary" id="loadReportBtn" type="button">Load report</button>
+    <button class="btn ghost" id="csvBtn" disabled>Download CSV</button>
+    <button class="btn primary" id="jsonBtn" disabled>Download JSON</button>
+  </div>
+  ${S.profile.role==='admin'?'<div class="notice">Historical archive records (2024–March 2026) are loaded only when you press <b>Load report</b>. Teachers continue to see their normal permitted data only.</div>':''}
+  <div id="reportSummary"><div class="empty">Choose dates and press Load report.</div></div>
+  <div class="table-wrap"><table><thead><tr><th>Date</th><th>Name</th><th>Class</th><th>Status</th><th>Source</th></tr></thead><tbody id="reportBody"><tr><td colspan="5" class="empty">No report loaded yet.</td></tr></tbody></table></div></section>`;
+
+  const draw=()=>{
+    let data=reportRows();
+    $('#reportSummary').innerHTML=`<div class="stats"><div class="stat-card"><span>Records</span><strong>${data.length}</strong></div><div class="stat-card"><span>Attendance</span><strong>${calcRate(data)}%</strong></div><div class="stat-card"><span>Present</span><strong>${data.filter(x=>x.status==='Present').length}</strong></div><div class="stat-card"><span>Absent</span><strong>${data.filter(x=>x.status==='Absent').length}</strong></div></div>`;
+    $('#reportBody').innerHTML=data.slice().sort((a,b)=>b.attendance_date.localeCompare(a.attendance_date)||(a.name||'').localeCompare(b.name||'')).map(r=>`<tr><td>${fmtDate(r.attendance_date)}</td><td>${esc(r.name)}</td><td>${esc(r.group_name)}</td><td><span class="badge ${r.status==='Present'?'good':'bad'}">${r.status}</span></td><td>${esc(r.source||'')}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">No attendance in this range.</td></tr>';
+    $('#csvBtn').disabled=false;$('#jsonBtn').disabled=false;
+  };
+
+  $('#loadReportBtn').onclick=async()=>{
+    S.reportFrom=$('#reportFrom').value;S.reportTo=$('#reportTo').value;S.reportGroup=$('#reportGroup').value;
+    if(!S.reportFrom||!S.reportTo)return toast('Choose both From and To dates.');
+    if(S.reportTo<S.reportFrom)return toast('To date must be on or after From date.');
+    const btn=$('#loadReportBtn');btn.disabled=true;btn.textContent='Loading…';
+    try{
+      S.reportHistorical=[];
+      if(S.profile.role==='admin')await fetchHistoricalReport(S.reportFrom,S.reportTo);
+      const opts=reportGroupOptions(), sel=$('#reportGroup'), chosen=S.reportGroup;
+      sel.innerHTML=`<option value="all">All permitted classes</option>${opts.map(g=>`<option ${chosen===g?'selected':''}>${esc(g)}</option>`).join('')}`;
+      draw();
+      toast(`Loaded ${reportRows().length} attendance records`);
+    }catch(e){console.error(e);toast('Could not load historical report: '+friendlyError(e))}
+    finally{btn.disabled=false;btn.textContent='Load report'}
+  };
+  $('#reportGroup').onchange=()=>{S.reportGroup=$('#reportGroup').value;if(!$('#csvBtn').disabled)draw()};
+  $('#csvBtn').onclick=()=>downloadCSV(reportRows());
+  $('#jsonBtn').onclick=()=>downloadFile(`csi-attendance-${S.reportFrom}-to-${S.reportTo}.json`,JSON.stringify(reportRows(),null,2),'application/json');
+}
+function reportRows(){
+  const current=currentReportRows();
+  const hist=S.profile.role==='admin'?(S.reportHistorical||[]):[];
+  const permitted=S.profile.role==='admin'?null:new Set(allowedGroups());
+  return [...current,...hist].filter(r=>
+    r.attendance_date>=S.reportFrom&&
+    r.attendance_date<=S.reportTo&&
+    ['Present','Absent'].includes(r.status)&&
+    (!permitted||permitted.has(r.group_name))&&
+    (S.reportGroup==='all'||r.group_name===S.reportGroup)
+  );
+}
+function downloadCSV(data){let rows=[['Date','Name','Class','Role','Status','Source'],...data.map(r=>[r.attendance_date,r.name,r.group_name,r.role,r.status,r.source||''])];let csv=rows.map(r=>r.map(x=>'"'+String(x??'').replaceAll('"','""')+'"').join(',')).join('\n');downloadFile(`csi-attendance-${S.reportFrom}-to-${S.reportTo}.csv`,csv,'text/csv;charset=utf-8')}
 function downloadFile(name,content,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([content],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
 function renderUsers(){if(S.profile.role!=='admin')return switchView('dashboard');const groups=[...new Set(S.people.map(p=>p.group_name))].sort();$('#content').innerHTML=`<div class="notice">Teachers create an account from the sign-in page. Assign one or more classes here. Firebase Security Rules also enforce these permissions in the database.</div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Assigned classes</th><th></th></tr></thead><tbody>${S.users.map(u=>{let a=u.allowed_groups||[];return `<tr><td>${esc(u.full_name||'Unnamed')}</td><td>${esc(u.email||'—')}</td><td><span class="badge ${u.role==='admin'?'good':'warn'}">${esc(u.role)}</span></td><td>${esc(a.join(', ')||'—')}</td><td>${u.id===S.profile.id?'Current account':`<button class="text-btn edit-user" data-id="${u.id}">Manage</button>`}</td></tr>`}).join('')}</tbody></table></div>`;$$('.edit-user').forEach(b=>b.onclick=()=>{let u=S.users.find(x=>x.id===b.dataset.id);let assigned=new Set(u.allowed_groups||[]);showModal(`<h3>Manage ${esc(u.full_name||'account')}</h3><form id="userForm" class="form-stack"><label>Role<select id="userRole"><option value="teacher" ${u.role==='teacher'?'selected':''}>Teacher</option><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option></select></label><div><b style="font-size:.85rem">Assigned classes</b><div class="checkbox-grid" style="margin-top:8px">${groups.map(g=>`<label class="check"><input type="checkbox" name="class" value="${esc(g)}" ${assigned.has(g)?'checked':''}> ${esc(g)}</label>`).join('')}</div></div><button class="btn primary">Save access</button></form>`);$('#userForm').onsubmit=async e=>{e.preventDefault();if(S.demo){toast('Account management needs Firebase');return}try{const role=$('#userRole').value;const chosen=$$('input[name=class]:checked').map(x=>x.value);const accessBatch=writeBatch(db);accessBatch.update(doc(db,'profiles',u.id),{role,allowed_groups:chosen});const changes=diffObject(u,{role,allowed_groups:chosen},['role','allowed_groups']);accessBatch.set(doc(collection(db,'audit_logs')),auditDoc('account_update','profile',u.id,`Changed access for ${u.full_name||u.email||'account'}`,{account_name:u.full_name||'',account_email:u.email||'',changes}));await accessBatch.commit();await loadCloud();closeModal();toast('Access updated and logged');renderUsers()}catch(err){toast(friendlyError(err))}}})}
 
@@ -476,12 +769,14 @@ function renderBackup(){
   const yearSummary={academic_year:b.label,start_date:b.start,end_date:b.end,total_records:yearRows.length,present:yearRows.filter(a=>statusNorm(a.status)==='Present').length,absent:yearRows.filter(a=>statusNorm(a.status)==='Absent').length,attendance_rate:calcRate(yearRows),active_people:S.people.filter(p=>p.active).length};
   $('#content').innerHTML=`<div class="grid-equal"><section class="panel"><h3>Download full backup</h3><p class="muted">Exports the roster and attendance as portable JSON.</p><button class="btn primary" id="fullBackup">Download full backup</button></section><section class="panel"><h3>Import starter roster</h3><p class="muted">One-click import of the ${seed.people.length} people and historical attendance included with this project. Use this once after making your first account an admin.</p><button class="btn secondary" id="seedImport">Import included roster</button></section></div>
   <div class="grid-equal" style="margin-top:18px"><section class="panel"><h3>Browser safety copy</h3><p class="muted">This device keeps a last-known snapshot after confirmed saves and cloud syncs.</p><button class="btn ghost" id="localBackup">Download browser snapshot</button></section><section class="panel"><h3>Firebase data</h3><p class="muted">Attendance selections are held in memory while editing. Firestore is written only after an editor presses <b>Confirm & save</b>.</p></section></div>
-  <section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">Parent view</p><h3>Publish public overview</h3><p class="muted tiny">Updates one small public summary document using aggregate data only. No student names or individual attendance are published.</p></div><button class="btn secondary" id="publishPublicSummary" type="button">Publish overview</button></div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">${esc(b.label)}</p><h3>Academic year control</h3><p class="muted tiny">Your year does not have to follow June–May. The administrator can close the current year and launch the next one with any start and end dates.</p></div><span class="badge ${b.status==='ended'?'warn':'good'}">${b.status==='ended'?'Ended':'Active'}</span></div>
+  <section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">Historical records</p><h3>Import attendance archive</h3><p class="muted tiny">Import the private JSON archive from your computer. The data is stored in a separate historical collection so normal logins do not load thousands of old records.</p></div></div>
+  <div class="toolbar"><label class="field grow"><span>Historical attendance JSON</span><input id="historicalFile" type="file" accept=".json,application/json"></label><button class="btn secondary" id="historicalImportBtn" type="button">Import historical data</button></div>
+  <div class="notice">Keep the historical JSON file private. Do not upload it to your public GitHub repository. Re-importing the same file is safe and also builds/refreshes the historical dashboard summaries for 2024–25 and 2025–26.</div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">Parent view</p><h3>Publish public overview</h3><p class="muted tiny">Updates one small public summary document using aggregate data only. No student names or individual attendance are published.</p></div><button class="btn secondary" id="publishPublicSummary" type="button">Publish overview</button></div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">${esc(b.label)}</p><h3>Academic year control</h3><p class="muted tiny">Your year does not have to follow June–May. The administrator can close the current year and launch the next one with any start and end dates.</p></div><span class="badge ${b.status==='ended'?'warn':'good'}">${b.status==='ended'?'Ended':'Active'}</span></div>
   <div class="stats"><div class="stat-card"><span>Current period</span><strong>${esc(b.label)}</strong><small>${fmtDate(b.start)} – ${fmtDate(b.end)}</small></div><div class="stat-card"><span>Attendance</span><strong>${yearSummary.attendance_rate}%</strong><small>${yearSummary.total_records} confirmed records</small></div><div class="stat-card"><span>Active roster</span><strong>${yearSummary.active_people}</strong><small>people at present</small></div></div>
   <div class="academic-actions"><button class="btn secondary" id="endAcademicYear">End & archive ${esc(b.label)}</button><button class="btn primary" id="launchAcademicYear">Launch new academic year</button></div></section>`;
   $('#fullBackup').onclick=()=>downloadFile(`csi-sunday-school-backup-${iso(new Date())}.json`,JSON.stringify({exported_at:new Date().toISOString(),church:cfg.churchName,academic_year:S.academicYear,people:S.people,attendance:S.attendance},null,2),'application/json');
   $('#localBackup').onclick=()=>downloadFile(`csi-browser-snapshot-${iso(new Date())}.json`,localStorage.getItem('csi_last_backup')||'{}','application/json');
-  $('#seedImport').onclick=importSeedData;$('#publishPublicSummary').onclick=async()=>{const btn=$('#publishPublicSummary');btn.disabled=true;btn.textContent='Publishing…';try{await updatePublicSummary();toast('Public parent overview updated')}catch(e){toast('Could not publish overview: '+friendlyError(e))}finally{btn.disabled=false;btn.textContent='Publish overview'}};
+  $('#seedImport').onclick=importSeedData;$('#historicalImportBtn').onclick=importHistoricalAttendance;$('#publishPublicSummary').onclick=async()=>{const btn=$('#publishPublicSummary');btn.disabled=true;btn.textContent='Publishing…';try{await updatePublicSummary();toast('Public parent overview updated')}catch(e){toast('Could not publish overview: '+friendlyError(e))}finally{btn.disabled=false;btn.textContent='Publish overview'}};
   $('#endAcademicYear').onclick=()=>endAcademicYear(b,yearRows,yearSummary);
   $('#launchAcademicYear').onclick=launchAcademicYear;
 }
@@ -531,6 +826,64 @@ function launchAcademicYear(){
     };
   };
 }
+
+async function importHistoricalAttendance(){
+  if(S.profile.role!=='admin')return;
+  if(S.demo)return toast('Historical import requires Firebase.');
+  const input=$('#historicalFile');
+  const file=input?.files?.[0];
+  if(!file)return toast('Choose the historical attendance JSON file first.');
+  let payload;
+  try{payload=JSON.parse(await file.text())}catch(e){return toast('That file is not valid JSON.')}
+  if(payload?.format!=='CSI_SHANTHI_HISTORICAL_ATTENDANCE_V1'||!Array.isArray(payload.attendance))return toast('This is not the expected CSI historical attendance file.');
+  const rows=payload.attendance;
+  const ok=confirm(`Import ${rows.length} historical attendance records from ${payload.date_range?.[0]||'the archive'} to ${payload.date_range?.[1]||''}?\n\nExisting records with the same source ID will be updated, not duplicated.`);
+  if(!ok)return;
+  const btn=$('#historicalImportBtn');btn.disabled=true;btn.textContent='Importing…';
+  try{
+    let done=0;
+    for(let i=0;i<rows.length;i+=440){
+      const batch=writeBatch(db);
+      for(const r of rows.slice(i,i+440)){
+        const id=String(r.id||`hist_${i}_${done}`);
+        batch.set(doc(db,'historical_attendance',id),{
+          person_name:String(r.person_name||'').trim(),
+          person_key:historicalPersonKey(r.person_name,r.group_name),
+          group_name:String(r.group_name||'').trim(),
+          role:String(r.role||'Student'),
+          attendance_date:String(r.attendance_date||''),
+          status:statusNorm(r.status),
+          source_file:String(r.source_file||''),
+          source_sheet:String(r.source_sheet||''),
+          source_row:Number(r.source_row||0),
+          source_value:r.source_value??null,
+          date_anomaly:!!r.date_anomaly,
+          imported_by:S.user?.id||'',
+          imported_at:new Date().toISOString()
+        },{merge:true});
+      }
+      await batch.commit();
+      done+=Math.min(440,rows.length-i);
+      btn.textContent=`Importing… ${done}/${rows.length}`;
+    }
+    const normalizedForSummary=rows.map(r=>({...r,person_key:historicalPersonKey(r.person_name,r.group_name),status:statusNorm(r.status)}));
+    const periods=historicalPeriodsFromRows(normalizedForSummary);
+    const summaryBatch=writeBatch(db);
+    for(const period of periods){
+      const summary=buildHistoricalSummary(period);
+      summaryBatch.set(doc(db,'historical_summaries',period.key),summary,{merge:true});
+    }
+    await summaryBatch.commit();
+    await loadHistoricalSummaryIndex(true);
+
+    const auditBatch=writeBatch(db);
+    auditBatch.set(doc(collection(db,'audit_logs')),auditDoc('historical_import','historical_attendance','archive',`Imported ${rows.length} historical attendance records`,{record_count:rows.length,date_range:payload.date_range||[],sources:payload.generated_from||[],anomaly_count:Array.isArray(payload.anomalies)?payload.anomalies.length:0,summary_periods:periods.map(p=>p.label)}));
+    await auditBatch.commit();
+    toast(`Historical attendance imported and dashboard analytics built for ${periods.map(p=>p.label).join(' and ')}`);
+  }catch(err){console.error(err);toast('Historical import failed: '+friendlyError(err))}
+  finally{btn.disabled=false;btn.textContent='Import historical data'}
+}
+
 async function importSeedData(){if(S.profile.role!=='admin')return;const ok=confirm(`Import ${seed.people.length} roster entries and ${seed.attendance.length} attendance records into Firebase? Existing matching records will be updated, not duplicated.`);if(!ok)return;try{const personMap=new Map(seed.people.map(p=>[String(p.id),p]));let ops=[];for(const p of seed.people)ops.push({ref:doc(db,'people',String(p.id)),data:{...p,id:Number(p.id),active:!!p.active}});for(const a of seed.attendance){const p=personMap.get(String(a.person_id));if(!p)continue;ops.push({ref:doc(db,'attendance',`${a.person_id}_${a.attendance_date}`),data:{...a,person_id:Number(a.person_id),person_doc:String(a.person_id),group_name:p.group_name,marked_by:S.user?.id||'import',updated_at:new Date().toISOString()}})}for(let i=0;i<ops.length;i+=450){const batch=writeBatch(db);ops.slice(i,i+450).forEach(o=>batch.set(o.ref,o.data,{merge:true}));await batch.commit()}const auditBatch=writeBatch(db);auditBatch.set(doc(collection(db,'audit_logs')),auditDoc('starter_import','system','starter_roster','Imported included starter roster',{people_count:seed.people.length,attendance_count:seed.attendance.length}));await auditBatch.commit();await loadCloud();toast('Starter roster imported to Firebase and logged');renderBackup()}catch(err){console.error(err);toast(friendlyError(err))}}
 function friendlyError(err){const code=err?.code||'';if(code.includes('invalid-credential'))return 'Incorrect email or password.';if(code.includes('email-already-in-use'))return 'That email already has an account.';if(code.includes('weak-password'))return 'Password must be at least 6 characters.';if(code.includes('user-not-found'))return 'No account was found for that email.';if(code.includes('too-many-requests'))return 'Too many attempts. Please wait a little and try again.';if(code.includes('permission-denied'))return 'Firebase blocked this action. Check Firestore Rules and your account role.';return err?.message?.replace(/^Firebase:\s*/,'')||'Something went wrong.'}
 function bindProfileLinks(){$$('.profile-link').forEach(b=>b.onclick=()=>showProfile(Number(b.dataset.id)))}
