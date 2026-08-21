@@ -799,14 +799,33 @@ function renderBackup(){
   const yearSummary={academic_year:b.label,start_date:b.start,end_date:b.end,total_records:yearRows.length,present:yearRows.filter(a=>statusNorm(a.status)==='Present').length,absent:yearRows.filter(a=>statusNorm(a.status)==='Absent').length,attendance_rate:calcRate(yearRows),active_people:S.people.filter(p=>p.active).length};
   $('#content').innerHTML=`<div class="grid-equal"><section class="panel"><h3>Download full backup</h3><p class="muted">Exports the roster and attendance as portable JSON.</p><button class="btn primary" id="fullBackup">Download full backup</button></section><section class="panel"><h3>Import starter roster</h3><p class="muted">One-click import of the ${seed.people.length} people and historical attendance included with this project. Use this once after making your first account an admin.</p><button class="btn secondary" id="seedImport">Import included roster</button></section></div>
   <div class="grid-equal" style="margin-top:18px"><section class="panel"><h3>Browser safety copy</h3><p class="muted">This device keeps a last-known snapshot after confirmed saves and cloud syncs.</p><button class="btn ghost" id="localBackup">Download browser snapshot</button></section><section class="panel"><h3>Firebase data</h3><p class="muted">Attendance selections are held in memory while editing. Firestore is written only after an editor presses <b>Confirm & save</b>.</p></section></div>
-  <section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">Historical records</p><h3>Import attendance archive</h3><p class="muted tiny">Import the private JSON archive from your computer. The data is stored in a separate historical collection so normal logins do not load thousands of old records.</p></div></div>
-  <div class="toolbar"><label class="field grow"><span>Historical attendance JSON</span><input id="historicalFile" type="file" accept=".json,application/json"></label><button class="btn secondary" id="historicalImportBtn" type="button">Import historical data</button></div>
-  <div class="notice">Keep the historical JSON file private. Do not upload it to your public GitHub repository. Re-importing the same file is safe and also builds/refreshes the historical dashboard summaries for 2024–25 and 2025–26.</div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">Parent view</p><h3>Publish public overview</h3><p class="muted tiny">Updates one small public summary document using aggregate data only. No student names or individual attendance are published.</p></div><button class="btn secondary" id="publishPublicSummary" type="button">Publish overview</button></div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">${esc(b.label)}</p><h3>Academic year control</h3><p class="muted tiny">Your year does not have to follow June–May. The administrator can close the current year and launch the next one with any start and end dates.</p></div><span class="badge ${b.status==='ended'?'warn':'good'}">${b.status==='ended'?'Ended':'Active'}</span></div>
+  <section class="panel" style="margin-top:18px">
+  <div class="panel-head"><div><p class="eyebrow">Historical records</p><h3>Historical attendance archive</h3><p class="muted tiny">Raw historical attendance and dashboard analytics are now handled separately to reduce Firestore writes.</p></div></div>
+
+  <div class="grid-equal">
+    <div class="panel" style="margin:0;padding:16px">
+      <h4 style="margin-top:0">1. Import raw attendance</h4>
+      <p class="muted tiny">Use this only when you are adding the archive for the first time or intentionally replacing historical records.</p>
+      <label class="field"><span>Historical attendance JSON</span><input id="historicalFile" type="file" accept=".json,application/json"></label>
+      <button class="btn secondary" id="historicalImportBtn" type="button" style="margin-top:10px">Import raw historical data</button>
+      <p class="tiny muted" style="margin-top:8px">This can write thousands of Firestore documents. Do not use it just to refresh charts.</p>
+    </div>
+
+    <div class="panel" style="margin:0;padding:16px">
+      <h4 style="margin-top:0">2. Rebuild dashboard analytics</h4>
+      <p class="muted tiny">Reads the historical records already in Firebase and refreshes only the small academic-year summary documents.</p>
+      <button class="btn primary" id="historicalRebuildBtn" type="button">Rebuild historical analytics</button>
+      <p class="tiny muted" style="margin-top:8px">This uses reads, but normally only a few writes: one summary document per academic year plus one audit entry.</p>
+    </div>
+  </div>
+
+  <div class="notice">Keep the historical JSON file private. Do not upload it to your public GitHub repository. For future dashboard/calculation fixes, use <b>Rebuild historical analytics</b> instead of re-importing the archive.</div>
+</section><section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">Parent view</p><h3>Publish public overview</h3><p class="muted tiny">Updates one small public summary document using aggregate data only. No student names or individual attendance are published.</p></div><button class="btn secondary" id="publishPublicSummary" type="button">Publish overview</button></div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><div><p class="eyebrow">${esc(b.label)}</p><h3>Academic year control</h3><p class="muted tiny">Your year does not have to follow June–May. The administrator can close the current year and launch the next one with any start and end dates.</p></div><span class="badge ${b.status==='ended'?'warn':'good'}">${b.status==='ended'?'Ended':'Active'}</span></div>
   <div class="stats"><div class="stat-card"><span>Current period</span><strong>${esc(b.label)}</strong><small>${fmtDate(b.start)} – ${fmtDate(b.end)}</small></div><div class="stat-card"><span>Attendance</span><strong>${yearSummary.attendance_rate}%</strong><small>${yearSummary.total_records} confirmed records</small></div><div class="stat-card"><span>Active roster</span><strong>${yearSummary.active_people}</strong><small>people at present</small></div></div>
   <div class="academic-actions"><button class="btn secondary" id="endAcademicYear">End & archive ${esc(b.label)}</button><button class="btn primary" id="launchAcademicYear">Launch new academic year</button></div></section>`;
   $('#fullBackup').onclick=()=>downloadFile(`csi-sunday-school-backup-${iso(new Date())}.json`,JSON.stringify({exported_at:new Date().toISOString(),church:cfg.churchName,academic_year:S.academicYear,people:S.people,attendance:S.attendance},null,2),'application/json');
   $('#localBackup').onclick=()=>downloadFile(`csi-browser-snapshot-${iso(new Date())}.json`,localStorage.getItem('csi_last_backup')||'{}','application/json');
-  $('#seedImport').onclick=importSeedData;$('#historicalImportBtn').onclick=importHistoricalAttendance;$('#publishPublicSummary').onclick=async()=>{const btn=$('#publishPublicSummary');btn.disabled=true;btn.textContent='Publishing…';try{await updatePublicSummary();toast('Public parent overview updated')}catch(e){toast('Could not publish overview: '+friendlyError(e))}finally{btn.disabled=false;btn.textContent='Publish overview'}};
+  $('#seedImport').onclick=importSeedData;$('#historicalImportBtn').onclick=importHistoricalAttendance;$('#historicalRebuildBtn').onclick=rebuildHistoricalAnalytics;$('#publishPublicSummary').onclick=async()=>{const btn=$('#publishPublicSummary');btn.disabled=true;btn.textContent='Publishing…';try{await updatePublicSummary();toast('Public parent overview updated')}catch(e){toast('Could not publish overview: '+friendlyError(e))}finally{btn.disabled=false;btn.textContent='Publish overview'}};
   $('#endAcademicYear').onclick=()=>endAcademicYear(b,yearRows,yearSummary);
   $('#launchAcademicYear').onclick=launchAcademicYear;
 }
@@ -857,6 +876,91 @@ function launchAcademicYear(){
   };
 }
 
+
+async function rebuildHistoricalAnalytics(){
+  if(S.profile?.role!=='admin')return;
+  if(S.demo)return toast('Historical analytics rebuild requires Firebase.');
+
+  const btn=$('#historicalRebuildBtn');
+  const original=btn?.textContent||'Rebuild historical analytics';
+  if(btn){btn.disabled=true;btn.textContent='Reading historical data…'}
+
+  try{
+    // Two date-scoped reads. No raw attendance documents are rewritten.
+    const periodDefs=[
+      {key:'2024-25',label:'2024–25',start:'2024-06-01',end:'2025-05-31'},
+      {key:'2025-26',label:'2025–26',start:'2025-06-01',end:'2026-05-31'}
+    ];
+
+    const rebuilt=[];
+    for(const p of periodDefs){
+      if(btn)btn.textContent=`Reading ${p.label}…`;
+      const snap=await getDocs(query(
+        collection(db,'historical_attendance'),
+        where('attendance_date','>=',p.start),
+        where('attendance_date','<=',p.end)
+      ));
+
+      const rows=snap.docs.map(d=>{
+        const r=d.data();
+        return {
+          id:d.id,
+          ...r,
+          person_name:r.person_name||'',
+          person_key:r.person_key||historicalPersonKey(r.person_name,r.group_name),
+          status:statusNorm(r.status)
+        };
+      }).filter(r=>['Present','Absent'].includes(r.status));
+
+      if(!rows.length)continue;
+
+      const summary=buildHistoricalSummary({...p,rows});
+      rebuilt.push({period:p,summary});
+    }
+
+    if(!rebuilt.length){
+      toast('No historical attendance records were found to rebuild.');
+      return;
+    }
+
+    if(btn)btn.textContent='Writing summaries…';
+
+    // Only a handful of writes: one summary per period plus one audit log.
+    const batch=writeBatch(db);
+    for(const {period,summary} of rebuilt){
+      batch.set(doc(db,'historical_summaries',period.key),summary,{merge:true});
+    }
+    batch.set(
+      doc(collection(db,'audit_logs')),
+      auditDoc(
+        'historical_analytics_rebuild',
+        'historical_summaries',
+        'academic_years',
+        `Rebuilt historical dashboard analytics for ${rebuilt.map(x=>x.period.label).join(' and ')}`,
+        {
+          periods:rebuilt.map(x=>({
+            key:x.period.key,
+            label:x.period.label,
+            total_records:x.summary.total_records,
+            peak_roster_students:x.summary.peak_roster_students,
+            overall_attendance_rate:x.summary.overall_attendance_rate
+          }))
+        }
+      )
+    );
+    await batch.commit();
+
+    await loadHistoricalSummaryIndex(true);
+    S.dashboardSummary=null;
+    toast(`Historical analytics rebuilt for ${rebuilt.map(x=>x.period.label).join(' and ')} without rewriting raw attendance.`);
+  }catch(err){
+    console.error(err);
+    toast('Historical analytics rebuild failed: '+friendlyError(err));
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=original}
+  }
+}
+
 async function importHistoricalAttendance(){
   if(S.profile.role!=='admin')return;
   if(S.demo)return toast('Historical import requires Firebase.');
@@ -867,7 +971,7 @@ async function importHistoricalAttendance(){
   try{payload=JSON.parse(await file.text())}catch(e){return toast('That file is not valid JSON.')}
   if(payload?.format!=='CSI_SHANTHI_HISTORICAL_ATTENDANCE_V1'||!Array.isArray(payload.attendance))return toast('This is not the expected CSI historical attendance file.');
   const rows=payload.attendance;
-  const ok=confirm(`Import ${rows.length} historical attendance records from ${payload.date_range?.[0]||'the archive'} to ${payload.date_range?.[1]||''}?\n\nExisting records with the same source ID will be updated, not duplicated.`);
+  const ok=confirm(`Import ${rows.length} historical attendance records from ${payload.date_range?.[0]||'the archive'} to ${payload.date_range?.[1]||''}?\n\nExisting records with the same source ID will be updated, not duplicated.\n\nUse this only for raw-data imports. For dashboard fixes, use Rebuild historical analytics instead.`);
   if(!ok)return;
   const btn=$('#historicalImportBtn');btn.disabled=true;btn.textContent='Importing…';
   try{
@@ -896,20 +1000,10 @@ async function importHistoricalAttendance(){
       done+=Math.min(440,rows.length-i);
       btn.textContent=`Importing… ${done}/${rows.length}`;
     }
-    const normalizedForSummary=rows.map(r=>({...r,person_key:historicalPersonKey(r.person_name,r.group_name),status:statusNorm(r.status)}));
-    const periods=historicalPeriodsFromRows(normalizedForSummary);
-    const summaryBatch=writeBatch(db);
-    for(const period of periods){
-      const summary=buildHistoricalSummary(period);
-      summaryBatch.set(doc(db,'historical_summaries',period.key),summary,{merge:true});
-    }
-    await summaryBatch.commit();
-    await loadHistoricalSummaryIndex(true);
-
     const auditBatch=writeBatch(db);
-    auditBatch.set(doc(collection(db,'audit_logs')),auditDoc('historical_import','historical_attendance','archive',`Imported ${rows.length} historical attendance records`,{record_count:rows.length,date_range:payload.date_range||[],sources:payload.generated_from||[],anomaly_count:Array.isArray(payload.anomalies)?payload.anomalies.length:0,summary_periods:periods.map(p=>p.label)}));
+    auditBatch.set(doc(collection(db,'audit_logs')),auditDoc('historical_import','historical_attendance','archive',`Imported ${rows.length} historical attendance records`,{record_count:rows.length,date_range:payload.date_range||[],sources:payload.generated_from||[],anomaly_count:Array.isArray(payload.anomalies)?payload.anomalies.length:0}));
     await auditBatch.commit();
-    toast(`Historical attendance imported and dashboard analytics rebuilt for ${periods.map(p=>p.label).join(' and ')} with reconciled single-Sunday roster headcounts`);
+    toast(`Historical attendance imported: ${rows.length} records. Use "Rebuild historical analytics" to refresh charts and year summaries.`);
   }catch(err){console.error(err);toast('Historical import failed: '+friendlyError(err))}
   finally{btn.disabled=false;btn.textContent='Import historical data'}
 }
