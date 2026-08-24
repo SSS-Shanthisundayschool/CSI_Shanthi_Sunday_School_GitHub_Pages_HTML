@@ -340,12 +340,16 @@ async function loadAnnouncements(){
 }
 async function cleanupExpiredAnnouncements(){
   if(S.demo||!db||S.profile?.role!=='admin')return;
-  const expired=S.announcements.filter(a=>announcementStatus(a)==='expired').slice(0,50);
+  const expired=S.announcements.filter(a=>announcementStatus(a)==='expired');
   if(!expired.length)return;
   try{
-    await Promise.all(expired.map(a=>deleteDoc(doc(db,'announcements',a.id))));
+    // Delete in small batches so this remains reliable even if many old notices exist.
+    for(let i=0;i<expired.length;i+=25){
+      await Promise.all(expired.slice(i,i+25).map(a=>deleteDoc(doc(db,'announcements',a.id))));
+    }
     const ids=new Set(expired.map(a=>a.id));
     S.announcements=S.announcements.filter(a=>!ids.has(a.id));
+    console.info(`Deleted ${expired.length} expired announcement${expired.length===1?'':'s'}.`);
   }catch(e){console.warn('Expired announcement cleanup skipped',e)}
 }
 function announcementCard(a,{publicView=false,manage=false}={}){
@@ -377,7 +381,7 @@ function datetimeLocalValue(v){const ms=announcementDateMs(v);if(!ms)return '';c
 function showAnnouncementForm(existing=null){
   const classes=allClassNames(), selected=new Set(existing?.target_classes||[]), all=existing?.audience_all??true;
   const defaultStart=datetimeLocalValue(existing?.publish_at)||datetimeLocalValue(new Date());
-  showModal(`<h3>${existing?'Edit':'Add'} announcement</h3><form id="announcementForm" class="form-stack"><label>Title<input id="annTitle" required maxlength="100" value="${esc(existing?.title||'')}" placeholder="e.g. Sunday School picnic"></label><label>Announcement<textarea id="annMessage" required maxlength="1500" rows="5" placeholder="What should families know?">${esc(existing?.message||'')}</textarea></label><div class="announcement-form-grid"><label>Post from<input id="annStart" type="datetime-local" required value="${defaultStart}"></label><label>Expires at<input id="annEnd" type="datetime-local" required value="${datetimeLocalValue(existing?.expires_at)}"></label></div><label style="display:flex;gap:9px;align-items:center"><input id="annAll" type="checkbox" ${all?'checked':''}> Relevant to all classes</label><div><span class="tiny muted">Or choose specific classes</span><div class="class-checks">${classes.map(c=>`<label><input type="checkbox" class="ann-class" value="${esc(c)}" ${selected.has(c)?'checked':''}> ${esc(c)}</label>`).join('')||'<span class="tiny muted">No classes found yet.</span>'}</div></div><button class="btn primary wide" type="submit">${existing?'Save changes':'Publish / schedule'}</button><p class="tiny muted">Announcements are hidden before their post time and immediately after expiry. For true database cleanup, enable Firestore TTL on <b>announcements.expires_at</b>.</p></form>`);
+  showModal(`<h3>${existing?'Edit':'Add'} announcement</h3><form id="announcementForm" class="form-stack"><label>Title<input id="annTitle" required maxlength="100" value="${esc(existing?.title||'')}" placeholder="e.g. Sunday School picnic"></label><label>Announcement<textarea id="annMessage" required maxlength="1500" rows="5" placeholder="What should families know?">${esc(existing?.message||'')}</textarea></label><div class="announcement-form-grid"><label>Post from<input id="annStart" type="datetime-local" required value="${defaultStart}"></label><label>Expires at<input id="annEnd" type="datetime-local" required value="${datetimeLocalValue(existing?.expires_at)}"></label></div><label style="display:flex;gap:9px;align-items:center"><input id="annAll" type="checkbox" ${all?'checked':''}> Relevant to all classes</label><div><span class="tiny muted">Or choose specific classes</span><div class="class-checks">${classes.map(c=>`<label><input type="checkbox" class="ann-class" value="${esc(c)}" ${selected.has(c)?'checked':''}> ${esc(c)}</label>`).join('')||'<span class="tiny muted">No classes found yet.</span>'}</div></div><button class="btn primary wide" type="submit">${existing?'Save changes':'Publish / schedule'}</button><p class="tiny muted">Announcements are hidden before their post time and immediately after expiry. Expired announcements are automatically deleted from Firebase the next time an administrator signs in.</p></form>`);
   const allBox=$('#annAll'), cls=$$('.ann-class'); const sync=()=>cls.forEach(x=>x.disabled=allBox.checked); sync(); allBox.onchange=sync;
   $('#announcementForm').onsubmit=e=>saveAnnouncement(e,existing?.id||null);
 }
