@@ -47,6 +47,9 @@
     .class-checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px;border:1px solid rgba(32,59,45,.12);border-radius:12px;max-height:220px;overflow:auto}
     .class-checks label{display:flex;gap:8px;align-items:center;font-size:.9rem}
     .public-announcements{margin-top:18px}
+    .install-cta{margin-top:12px}
+    .share-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
+    .share-actions .btn{padding:8px 11px;font-size:.82rem}
     @media(max-width:640px){.account-menu{position:fixed;right:14px;top:68px;width:min(260px,calc(100vw - 28px))}.confirm-summary{grid-template-columns:1fr 1fr 1fr}.announcement-form-grid{grid-template-columns:1fr}.class-checks{grid-template-columns:1fr}.announcement-top{flex-direction:column}}
   </style>
 
@@ -78,6 +81,7 @@
         <button id="forgotPassword" class="text-btn" type="button">Forgot password?</button>
         <button id="showSignup" class="text-btn" type="button">Teacher? Create an account request</button>
         <button id="showPublicDashboard" class="btn ghost wide" type="button" style="margin-top:10px">View Sunday School overview</button>
+        <button class="btn secondary wide install-app-btn install-cta" type="button">📲 Install CSI SSS app</button>
         <form id="signupForm" class="form-stack hidden">
           <div class="divider"><span>Teacher registration</span></div>
           <label>Full name<input id="signupName" required placeholder="Your name"></label>
@@ -99,7 +103,7 @@
     <main class="main" style="margin-left:0;width:100%">
       <header class="topbar">
         <div><p class="eyebrow">CSI Shanthi Church · Wilson Garden</p><h2>Sunday School Overview</h2></div>
-        <div class="top-actions"><button id="publicBackToLogin" class="btn ghost" type="button">Staff login</button></div>
+        <div class="top-actions"><button class="btn secondary install-app-btn" type="button">📲 Install app</button><button id="publicBackToLogin" class="btn ghost" type="button">Staff login</button></div>
       </header>
       <div id="publicContent" class="content"></div>
     </main>
@@ -127,6 +131,7 @@
         <div class="top-actions account-wrap"><span class="date-chip" id="todayChip"></span><button class="avatar top-avatar" id="topAvatar" type="button" aria-label="Open account menu">A</button>
           <div id="accountMenu" class="account-menu hidden">
             <div class="account-menu-head"><b id="accountMenuName">Account</b><span id="accountMenuRole">Signed in</span></div>
+            <button class="account-menu-action install-app-btn" type="button">📲 <span>Install CSI SSS app</span></button>
             <button id="logoutMenuBtn" class="account-menu-action" type="button">↗ <span>Sign out</span></button>
           </div>
         </div>
@@ -352,14 +357,45 @@ async function cleanupExpiredAnnouncements(){
     console.info(`Deleted ${expired.length} expired announcement${expired.length===1?'':'s'}.`);
   }catch(e){console.warn('Expired announcement cleanup skipped',e)}
 }
+function announcementShareText(a){
+  const cls=Array.isArray(a.target_classes)?a.target_classes.filter(Boolean):[];
+  let greeting='Dear Sunday School students and parents,';
+  if(!a.audience_all&&cls.length===1)greeting=`Dear ${cls[0]} class and parents,`;
+  else if(!a.audience_all&&cls.length>1)greeting=`Dear ${cls.join(', ')} classes and parents,`;
+  const start=announcementDateMs(a.publish_at), end=announcementDateMs(a.expires_at);
+  const timing=[];
+  if(start)timing.push(`From: ${new Date(start).toLocaleString('en-IN')}`);
+  if(end)timing.push(`Valid until: ${new Date(end).toLocaleString('en-IN')}`);
+  return `${greeting}\n\n📢 *${a.title||'Sunday School Announcement'}*\n\n${a.message||''}${timing.length?`\n\n${timing.join('\\n')}`:''}\n\nRegards,\nCSI Shanthi Church Sunday School`;
+}
+function copyTextFallback(value){
+  const ta=document.createElement('textarea');ta.value=value;ta.setAttribute('readonly','');ta.style.position='absolute';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){}ta.remove();return ok;
+}
+async function copyAnnouncement(id){
+  const a=S.announcements.find(x=>x.id===id);if(!a)return;
+  const value=announcementShareText(a);
+  try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(value);toast('Announcement message copied.');}else if(copyTextFallback(value))toast('Announcement message copied.');else throw new Error('copy unavailable');}
+  catch(e){showModal(`<h3>Copy announcement</h3><p class="muted">Select and copy this message:</p><textarea rows="12" style="width:100%">${esc(value)}</textarea>`)}
+}
+function whatsappAnnouncement(id){
+  const a=S.announcements.find(x=>x.id===id);if(!a)return;
+  const url=`https://wa.me/?text=${encodeURIComponent(announcementShareText(a))}`;
+  window.open(url,'_blank','noopener,noreferrer');
+}
+function bindAnnouncementShareButtons(root=document){
+  root.querySelectorAll('.announcement-whatsapp').forEach(b=>b.onclick=()=>whatsappAnnouncement(b.dataset.id));
+  root.querySelectorAll('.announcement-copy').forEach(b=>b.onclick=()=>copyAnnouncement(b.dataset.id));
+}
 function announcementCard(a,{publicView=false,manage=false}={}){
   const status=announcementStatus(a), start=announcementDateMs(a.publish_at), end=announcementDateMs(a.expires_at);
   const cls=Array.isArray(a.target_classes)?a.target_classes:[];
   const chips=a.audience_all?['All classes']:cls;
+  const share=status!=='expired'?`<div class="share-actions"><button class="btn secondary announcement-whatsapp" data-id="${esc(a.id)}" type="button">WhatsApp</button><button class="btn ghost announcement-copy" data-id="${esc(a.id)}" type="button">Copy message</button></div>`:'';
   return `<article class="announcement-card ${publicView?'public':''}">
     <div class="announcement-top"><div><h4>${esc(a.title||'Announcement')}</h4><div class="announcement-meta" style="margin-top:7px">${chips.map(c=>`<span class="announcement-chip">${esc(c)}</span>`).join('')}${manage?`<span class="announcement-chip ${status}">${esc(status[0].toUpperCase()+status.slice(1))}</span>`:''}</div></div>${manage?`<div class="announcement-actions"><button class="btn ghost announcement-edit" data-id="${esc(a.id)}" type="button">Edit</button><button class="btn ghost announcement-delete" data-id="${esc(a.id)}" type="button">Delete</button></div>`:''}</div>
     <p>${esc(a.message||'')}</p>
     <div class="tiny muted">${start?`Posts ${new Date(start).toLocaleString('en-IN')}`:''}${end?` · Expires ${new Date(end).toLocaleString('en-IN')}`:''}</div>
+    ${share}
   </article>`;
 }
 function renderAnnouncementSection({publicView=false}={}){
@@ -376,6 +412,7 @@ function showAnnouncementManager(){
   $('#newAnnouncementBtn').onclick=()=>showAnnouncementForm();
   $$('.announcement-edit').forEach(b=>b.onclick=()=>showAnnouncementForm(S.announcements.find(a=>a.id===b.dataset.id)));
   $$('.announcement-delete').forEach(b=>b.onclick=()=>deleteAnnouncement(b.dataset.id));
+  bindAnnouncementShareButtons($('#modalBody'));
 }
 function datetimeLocalValue(v){const ms=announcementDateMs(v);if(!ms)return '';const d=new Date(ms),pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`}
 function showAnnouncementForm(existing=null){
@@ -488,6 +525,7 @@ function renderPublicDashboard(){
       <div class="trend-list">${(s.class_summary||[]).map(c=>`<div class="trend-row"><span>${esc(c.group_name||'Class')}</span><div class="bar"><i style="width:${Math.max(0,Math.min(100,Number(c.attendance_rate||0)))}%"></i></div><b>${Number(c.attendance_rate||0)}%</b></div>`).join('')||'<div class="empty">No class summary yet.</div>'}</div>
       <p class="tiny muted" style="margin-top:14px">Last updated ${s.last_updated?new Date(s.last_updated).toLocaleString():'—'}.</p>
     </section>`;
+  bindAnnouncementShareButtons($('#publicContent'));
 }
 
 
@@ -616,7 +654,29 @@ async function selectDashboardPeriod(key){
 
 async function loadCloud(){const user=auth.currentUser;if(!user){S.user=S.profile=null;S.people=[];S.attendance=[];return}S.user={id:user.uid,email:user.email};S.profile=await ensureProfile(user);await loadAcademicYearConfig();await loadClassCatalog();await loadPublicSummary();await loadAnnouncements();S.classes=Array.isArray(S.profile.allowed_groups)?S.profile.allowed_groups:[];const scope=S.profile.role==='admin'?null:S.classes;S.people=(await getCollectionRows('people',scope)).sort((a,b)=>(a.group_name||'').localeCompare(b.group_name||'')||(a.name||'').localeCompare(b.name||''));S.attendance=(await getCollectionRows('attendance',scope)).sort((a,b)=>(a.attendance_date||'').localeCompare(b.attendance_date||''));if(S.profile.role==='admin'){const us=await getDocs(collection(db,'profiles'));S.users=us.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.full_name||'').localeCompare(b.full_name||''));S.assignments=S.users.flatMap(u=>(u.allowed_groups||[]).map(g=>({user_id:u.id,group_name:g})));await loadHistoricalSummaryIndex();await cleanupExpiredAnnouncements()}else{S.users=[];S.assignments=[];S.auditLogs=[];S.auditCursor=null;S.auditHasMore=false;S.historicalSummaries=[]}autoBackup('cloud-sync')}
 async function init(){S.selectedDate=sundayOnOrBefore();const b=academicBounds();S.reportFrom=b.start;S.reportTo=Math.min(b.end,iso(new Date()));bindStatic();if(configured){const app=initializeApp(cfg.firebase);auth=getAuth(app);db=getFirestore(app);onAuthStateChanged(auth,async()=>{try{await loadCloud();const ay=academicBounds();S.reportFrom=ay.start;S.reportTo=Math.min(ay.end,iso(new Date()));setAuthUI()}catch(e){console.error(e);toast('Could not load Firebase data: '+friendlyError(e))}})}setAuthUI()}
+let deferredInstallPrompt=null;
+function isStandaloneApp(){return window.matchMedia?.('(display-mode: standalone)').matches||window.navigator.standalone===true}
+function isIOSDevice(){return /iphone|ipad|ipod/i.test(navigator.userAgent)}
+function showInstallHelp(){
+  if(isStandaloneApp())return toast('CSI SSS is already installed.');
+  if(isIOSDevice())return showModal(`<h3>Install CSI SSS on iPhone / iPad</h3><p class="muted">Open this website in <b>Safari</b>, tap the <b>Share</b> button, choose <b>Add to Home Screen</b>, then tap <b>Add</b>.</p><div class="notice">After installation, CSI SSS will appear on your Home Screen with the church icon and open like an app.</div>`);
+  showModal(`<h3>Install CSI SSS</h3><p class="muted">If your browser supports app installation, use its menu and choose <b>Install app</b> or <b>Add to Home screen</b>.</p><div class="notice">On Android Chrome: tap <b>⋮</b> → <b>Install app</b> / <b>Add to Home screen</b>.</div>`);
+}
+async function installCSIApp(){
+  if(isStandaloneApp())return toast('CSI SSS is already installed.');
+  if(deferredInstallPrompt){
+    deferredInstallPrompt.prompt();
+    try{await deferredInstallPrompt.userChoice}catch(e){}
+    deferredInstallPrompt=null;
+    return;
+  }
+  showInstallHelp();
+}
+function bindInstallButtons(){document.querySelectorAll('.install-app-btn').forEach(b=>b.onclick=installCSIApp)}
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;bindInstallButtons()});
+window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null;toast('CSI SSS installed successfully.')});
 function bindStatic(){
+ bindInstallButtons();
  $('#loginForm').addEventListener('submit',async e=>{e.preventDefault();if(!configured)return;try{await signInWithEmailAndPassword(auth,$('#loginEmail').value.trim(),$('#loginPassword').value)}catch(err){toast(friendlyError(err))}});
  $('#forgotPassword').onclick=async()=>{if(!configured)return;const existing=$('#loginEmail').value.trim();showModal(`<h3>Reset password</h3><p class="muted">Enter the email address used for your Sunday School account. Firebase will send a password-reset link.</p><form id="resetForm" class="form-stack"><label>Email<input id="resetEmail" type="email" required value="${esc(existing)}" placeholder="teacher@example.com"></label><button class="btn primary wide" type="submit">Send reset link</button></form>`);$('#resetForm').onsubmit=async e=>{e.preventDefault();try{await sendPasswordResetEmail(auth,$('#resetEmail').value.trim());closeModal();toast('Password reset email sent. Check your inbox and spam folder.')}catch(err){toast(friendlyError(err))}}};
  $('#showSignup').onclick=()=>$('#signupForm').classList.toggle('hidden');
@@ -667,7 +727,7 @@ function renderDashboard(){
   <section class="panel"><div class="panel-head"><div><h3>Needs a check-in</h3><p class="muted tiny">Consecutive recorded absences</p></div></div><div class="alert-list">${follow.length?follow.slice(0,7).map(x=>personRow(x.p,`<span class="badge bad">${x.n} Sundays</span>`)).join(''):'<div class="empty">No chronic-absence alerts 🎉</div>'}</div></section></div>
   <div class="grid-equal" style="margin-top:18px"><section class="panel"><div class="panel-head"><div><h3>Current attendance streaks</h3><p class="muted tiny">Students with consecutive presents</p></div></div><div class="streak-list">${streaks.length?streaks.map(x=>personRow(x.p,`<span class="badge good">${x.n} in a row</span>`)).join(''):'<div class="empty">Streaks will appear after more Sundays are marked.</div>'}</div></section><section class="panel"><div class="panel-head"><div><h3>Monthly average attendance %</h3><p class="muted tiny">Weighted monthly attendance rate · Present ÷ total marked</p></div></div>${monthlyChart(ay,b)}</section></div>`;
   $('#dashboardPeriod').onchange=e=>selectDashboardPeriod(e.target.value);
-  $('#quickAttendance').onclick=()=>switchView('attendance');$('#quickReport').onclick=()=>switchView('reports');bindAnnouncementDashboardButton();bindProfileLinks();
+  $('#quickAttendance').onclick=()=>switchView('attendance');$('#quickReport').onclick=()=>switchView('reports');bindAnnouncementDashboardButton();bindAnnouncementShareButtons($('#content'));bindProfileLinks();
 }
 function renderHistoricalDashboard(s,periods){
   const classRates=(s.class_summary||[]).map(x=>({g:x.group_name,rate:Number(x.attendance_rate||0)}));
