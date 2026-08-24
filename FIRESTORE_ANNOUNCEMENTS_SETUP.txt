@@ -1,0 +1,29 @@
+CSI SSS ANNOUNCEMENTS — FIRESTORE SETUP
+
+No Firestore TTL policy is required.
+No billing upgrade is required for announcement expiry cleanup.
+
+How expiry works:
+1. Every announcement has a Firestore Timestamp field named expires_at.
+2. The website immediately hides an announcement once expires_at has passed.
+3. Whenever an administrator signs in, the app checks the announcements collection.
+4. Any expired announcements are automatically deleted from Firestore using normal document deletes.
+
+Required Firestore Security Rules:
+
+match /announcements/{announcementId} {
+  allow read: if true;
+  allow create, update, delete: if isAdmin();
+}
+
+Keep this block inside your existing:
+service cloud.firestore {
+  match /databases/{database}/documents {
+    ...
+  }
+}
+
+The existing isAdmin() helper in your rules is used to protect creation, editing and deletion.
+
+IMPORTANT:
+Because announcements can be read by the public dashboard, do not put private student information, internal admin notes, phone numbers, or other confidential information in announcement documents.
