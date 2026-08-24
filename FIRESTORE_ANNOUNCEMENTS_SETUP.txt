@@ -1,0 +1,25 @@
+ANNOUNCEMENTS FIRESTORE RULES — merge into your existing firestore.rules
+
+Do NOT replace your existing rules with this file. Add the announcements match block
+inside your existing `match /databases/{database}/documents { ... }` section.
+
+function isAdmin() {
+  return request.auth != null &&
+    get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin';
+}
+
+match /announcements/{announcementId} {
+  // Public dashboard can read announcements. The app only displays notices whose
+  // publish_at has arrived and whose expires_at has not passed.
+  allow read: if true;
+
+  // Only authenticated admins can create, edit or delete announcements.
+  allow create, update, delete: if isAdmin();
+}
+
+TTL setup for actual database cleanup:
+Collection group: announcements
+TTL field: expires_at
+
+The app hides an announcement immediately at its expiry time. Firestore TTL performs
+physical deletion later (Firestore documents say TTL deletion is typically within 24 hours).
