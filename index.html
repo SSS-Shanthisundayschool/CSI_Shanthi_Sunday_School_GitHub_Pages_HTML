@@ -48,9 +48,10 @@
     .class-checks label{display:flex;gap:8px;align-items:center;font-size:.9rem}
     .public-announcements{margin-top:18px}
     .install-cta{margin-top:12px}
+    .dashboard-install-btn{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-weight:700}
     .share-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
     .share-actions .btn{padding:8px 11px;font-size:.82rem}
-    @media(max-width:640px){.account-menu{position:fixed;right:14px;top:68px;width:min(260px,calc(100vw - 28px))}.confirm-summary{grid-template-columns:1fr 1fr 1fr}.announcement-form-grid{grid-template-columns:1fr}.class-checks{grid-template-columns:1fr}.announcement-top{flex-direction:column}}
+    @media(max-width:640px){.account-menu{position:fixed;right:14px;top:68px;width:min(260px,calc(100vw - 28px))}.confirm-summary{grid-template-columns:1fr 1fr 1fr}.announcement-form-grid{grid-template-columns:1fr}.class-checks{grid-template-columns:1fr}.announcement-top{flex-direction:column}.dashboard-install-btn .install-label{display:none}.dashboard-install-btn{padding:10px 12px}}
   </style>
 
 </head>
@@ -128,7 +129,7 @@
       <header class="topbar">
         <button id="menuBtn" class="icon-btn">☰</button>
         <div><p class="eyebrow" id="viewEyebrow">Academic year</p><h2 id="viewTitle">Dashboard</h2></div>
-        <div class="top-actions account-wrap"><span class="date-chip" id="todayChip"></span><button class="avatar top-avatar" id="topAvatar" type="button" aria-label="Open account menu">A</button>
+        <div class="top-actions account-wrap"><button class="btn secondary install-app-btn dashboard-install-btn" type="button" aria-label="Install CSI SSS app">📲 <span class="install-label">Install app</span></button><span class="date-chip" id="todayChip"></span><button class="avatar top-avatar" id="topAvatar" type="button" aria-label="Open account menu">A</button>
           <div id="accountMenu" class="account-menu hidden">
             <div class="account-menu-head"><b id="accountMenuName">Account</b><span id="accountMenuRole">Signed in</span></div>
             <button class="account-menu-action install-app-btn" type="button">📲 <span>Install CSI SSS app</span></button>
