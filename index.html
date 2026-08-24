@@ -6,6 +6,10 @@
   <meta name="theme-color" content="#203b2d" />
   <title>CSI Shanthi Church Sunday School Attendance</title>
   <meta name="description" content="Attendance and insights for CSI Shanthi Church Sunday School, Wilson Garden." />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
@@ -27,7 +31,23 @@
     .chart-col{position:relative}
     .chart-value{font-size:.72rem;font-weight:700;color:#203b2d;margin-bottom:5px;line-height:1;white-space:nowrap}
     .graph-note{font-size:.74rem;color:#6f7d75;margin-top:8px}
-    @media(max-width:640px){.account-menu{position:fixed;right:14px;top:68px;width:min(260px,calc(100vw - 28px))}.confirm-summary{grid-template-columns:1fr 1fr 1fr}}
+    .announcement-list{display:grid;gap:12px}
+    .announcement-card{border:1px solid rgba(32,59,45,.12);background:#fbfdfb;border-radius:16px;padding:16px;display:grid;gap:9px}
+    .announcement-card.public{background:#fffdf5;border-color:rgba(158,119,37,.2)}
+    .announcement-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+    .announcement-top h4{margin:0;font-family:'Playfair Display',serif;color:#203b2d;font-size:1.05rem}
+    .announcement-card p{margin:0;white-space:pre-wrap;line-height:1.5}
+    .announcement-meta{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+    .announcement-chip{display:inline-flex;align-items:center;border-radius:999px;padding:5px 8px;background:#edf4ef;color:#355645;font-size:.72rem;font-weight:700}
+    .announcement-chip.scheduled{background:#fff4d8;color:#7a5b16}
+    .announcement-chip.expired{background:#f6e8e8;color:#8a3838}
+    .announcement-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .announcement-empty{padding:18px;border:1px dashed rgba(32,59,45,.18);border-radius:14px;color:#6f7d75;text-align:center}
+    .announcement-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .class-checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px;border:1px solid rgba(32,59,45,.12);border-radius:12px;max-height:220px;overflow:auto}
+    .class-checks label{display:flex;gap:8px;align-items:center;font-size:.9rem}
+    .public-announcements{margin-top:18px}
+    @media(max-width:640px){.account-menu{position:fixed;right:14px;top:68px;width:min(260px,calc(100vw - 28px))}.confirm-summary{grid-template-columns:1fr 1fr 1fr}.announcement-form-grid{grid-template-columns:1fr}.class-checks{grid-template-columns:1fr}.announcement-top{flex-direction:column}}
   </style>
 
 </head>
@@ -138,12 +158,12 @@ window.CSI_CONFIG = {
   <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut, updateProfile } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js';
-import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, query, where, orderBy, limit, startAfter, writeBatch, serverTimestamp } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
+import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, startAfter, writeBatch, serverTimestamp, Timestamp } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
 (() => {
 'use strict';
 const cfg=window.CSI_CONFIG||{}, seed=window.CSI_SEED||{people:[],attendance:[]};
 const configured=!!(cfg.firebase?.apiKey&&cfg.firebase?.projectId); let auth=null,db=null;
-const S={user:null,profile:null,classes:[],classCatalog:[],people:[],attendance:[],users:[],assignments:[],auditLogs:[],auditCursor:null,auditHasMore:false,auditFilterFrom:'',auditFilterTo:'',publicSummary:null,reportHistorical:[],historicalSummaries:[],dashboardPeriod:'current',dashboardSummary:null,academicYear:null,view:'dashboard',demo:false,attendanceDraft:{},selectedGroup:'',selectedDate:'',reportFrom:'',reportTo:'',reportGroup:'all'};
+const S={user:null,profile:null,classes:[],classCatalog:[],people:[],attendance:[],users:[],assignments:[],auditLogs:[],auditCursor:null,auditHasMore:false,auditFilterFrom:'',auditFilterTo:'',publicSummary:null,reportHistorical:[],historicalSummaries:[],announcements:[],dashboardPeriod:'current',dashboardSummary:null,academicYear:null,view:'dashboard',demo:false,attendanceDraft:{},selectedGroup:'',selectedDate:'',reportFrom:'',reportTo:'',reportGroup:'all'};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 function esc(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
 function initials(n=''){return n.split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase()||'?';}
@@ -267,7 +287,10 @@ function auditActionLabel(a){
     academic_year_launch:'Academic year launched',
     starter_import:'Starter roster imported',
     class_add:'Class added',
-    class_rename:'Class renamed'
+    class_rename:'Class renamed',
+    announcement_create:'Announcement created',
+    announcement_update:'Announcement updated',
+    announcement_delete:'Announcement deleted'
   };
   return map[a]||String(a||'Change').replaceAll('_',' ');
 }
@@ -283,6 +306,98 @@ function auditDetailHtml(log){
   return `<pre style="white-space:pre-wrap;background:#f5f8f6;border-radius:12px;padding:12px;font-size:.78rem;overflow:auto">${esc(JSON.stringify(d,null,2))}</pre>`;
 }
 
+
+function announcementDateMs(v){
+  if(!v)return 0;
+  if(typeof v?.toDate==='function')return v.toDate().getTime();
+  if(v?.seconds)return Number(v.seconds)*1000;
+  const d=new Date(v);return Number.isNaN(d.getTime())?0:d.getTime();
+}
+function announcementStatus(a,now=Date.now()){
+  const start=announcementDateMs(a.publish_at), end=announcementDateMs(a.expires_at);
+  if(end&&end<=now)return 'expired';
+  if(start&&start>now)return 'scheduled';
+  return 'active';
+}
+function announcementAudienceLabel(a){
+  if(a.audience_all)return 'All classes';
+  const cls=Array.isArray(a.target_classes)?a.target_classes.filter(Boolean):[];
+  return cls.length?cls.join(', '):'General';
+}
+function isAnnouncementRelevant(a,{publicView=false}={}){
+  if(announcementStatus(a)!=='active')return false;
+  if(publicView)return true;
+  if(S.profile?.role==='admin'||a.audience_all)return true;
+  const targets=new Set(Array.isArray(a.target_classes)?a.target_classes:[]);
+  return (S.classes||[]).some(c=>targets.has(c));
+}
+async function loadAnnouncements(){
+  if(S.demo||!db){S.announcements=[];return}
+  try{
+    const snap=await getDocs(collection(db,'announcements'));
+    S.announcements=snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>announcementDateMs(b.publish_at)-announcementDateMs(a.publish_at));
+  }catch(e){console.warn('Could not load announcements',e);S.announcements=[]}
+}
+async function cleanupExpiredAnnouncements(){
+  if(S.demo||!db||S.profile?.role!=='admin')return;
+  const expired=S.announcements.filter(a=>announcementStatus(a)==='expired').slice(0,50);
+  if(!expired.length)return;
+  try{
+    await Promise.all(expired.map(a=>deleteDoc(doc(db,'announcements',a.id))));
+    const ids=new Set(expired.map(a=>a.id));
+    S.announcements=S.announcements.filter(a=>!ids.has(a.id));
+  }catch(e){console.warn('Expired announcement cleanup skipped',e)}
+}
+function announcementCard(a,{publicView=false,manage=false}={}){
+  const status=announcementStatus(a), start=announcementDateMs(a.publish_at), end=announcementDateMs(a.expires_at);
+  const cls=Array.isArray(a.target_classes)?a.target_classes:[];
+  const chips=a.audience_all?['All classes']:cls;
+  return `<article class="announcement-card ${publicView?'public':''}">
+    <div class="announcement-top"><div><h4>${esc(a.title||'Announcement')}</h4><div class="announcement-meta" style="margin-top:7px">${chips.map(c=>`<span class="announcement-chip">${esc(c)}</span>`).join('')}${manage?`<span class="announcement-chip ${status}">${esc(status[0].toUpperCase()+status.slice(1))}</span>`:''}</div></div>${manage?`<div class="announcement-actions"><button class="btn ghost announcement-edit" data-id="${esc(a.id)}" type="button">Edit</button><button class="btn ghost announcement-delete" data-id="${esc(a.id)}" type="button">Delete</button></div>`:''}</div>
+    <p>${esc(a.message||'')}</p>
+    <div class="tiny muted">${start?`Posts ${new Date(start).toLocaleString('en-IN')}`:''}${end?` · Expires ${new Date(end).toLocaleString('en-IN')}`:''}</div>
+  </article>`;
+}
+function renderAnnouncementSection({publicView=false}={}){
+  const items=S.announcements.filter(a=>isAnnouncementRelevant(a,{publicView}));
+  return `<section class="panel ${publicView?'public-announcements':''}"><div class="panel-head"><div><h3>Announcements</h3><p class="muted tiny">${publicView?'Current Sunday School notices for families and visitors.':'Notices relevant to your classes.'}</p></div>${!publicView&&S.profile?.role==='admin'?'<button class="btn secondary" id="manageAnnouncements" type="button">Manage announcements</button>':''}</div><div class="announcement-list">${items.length?items.map(a=>announcementCard(a,{publicView})).join(''):'<div class="announcement-empty">No current announcements.</div>'}</div></section>`;
+}
+function bindAnnouncementDashboardButton(){
+  const b=$('#manageAnnouncements');if(b)b.onclick=()=>showAnnouncementManager();
+}
+function showAnnouncementManager(){
+  if(S.profile?.role!=='admin')return;
+  const rows=S.announcements.slice().sort((a,b)=>announcementDateMs(b.publish_at)-announcementDateMs(a.publish_at));
+  showModal(`<div class="panel-head"><div><p class="eyebrow">Admin</p><h3 style="margin:.2rem 0">Announcements</h3><p class="muted tiny">Create now, schedule for later, target classes, and set an expiry.</p></div><button id="newAnnouncementBtn" class="btn primary" type="button">+ Add announcement</button></div><div class="announcement-list" style="margin-top:16px">${rows.length?rows.map(a=>announcementCard(a,{manage:true})).join(''):'<div class="announcement-empty">No announcements yet.</div>'}</div>`);
+  $('#newAnnouncementBtn').onclick=()=>showAnnouncementForm();
+  $$('.announcement-edit').forEach(b=>b.onclick=()=>showAnnouncementForm(S.announcements.find(a=>a.id===b.dataset.id)));
+  $$('.announcement-delete').forEach(b=>b.onclick=()=>deleteAnnouncement(b.dataset.id));
+}
+function datetimeLocalValue(v){const ms=announcementDateMs(v);if(!ms)return '';const d=new Date(ms),pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`}
+function showAnnouncementForm(existing=null){
+  const classes=allClassNames(), selected=new Set(existing?.target_classes||[]), all=existing?.audience_all??true;
+  const defaultStart=datetimeLocalValue(existing?.publish_at)||datetimeLocalValue(new Date());
+  showModal(`<h3>${existing?'Edit':'Add'} announcement</h3><form id="announcementForm" class="form-stack"><label>Title<input id="annTitle" required maxlength="100" value="${esc(existing?.title||'')}" placeholder="e.g. Sunday School picnic"></label><label>Announcement<textarea id="annMessage" required maxlength="1500" rows="5" placeholder="What should families know?">${esc(existing?.message||'')}</textarea></label><div class="announcement-form-grid"><label>Post from<input id="annStart" type="datetime-local" required value="${defaultStart}"></label><label>Expires at<input id="annEnd" type="datetime-local" required value="${datetimeLocalValue(existing?.expires_at)}"></label></div><label style="display:flex;gap:9px;align-items:center"><input id="annAll" type="checkbox" ${all?'checked':''}> Relevant to all classes</label><div><span class="tiny muted">Or choose specific classes</span><div class="class-checks">${classes.map(c=>`<label><input type="checkbox" class="ann-class" value="${esc(c)}" ${selected.has(c)?'checked':''}> ${esc(c)}</label>`).join('')||'<span class="tiny muted">No classes found yet.</span>'}</div></div><button class="btn primary wide" type="submit">${existing?'Save changes':'Publish / schedule'}</button><p class="tiny muted">Announcements are hidden before their post time and immediately after expiry. For true database cleanup, enable Firestore TTL on <b>announcements.expires_at</b>.</p></form>`);
+  const allBox=$('#annAll'), cls=$$('.ann-class'); const sync=()=>cls.forEach(x=>x.disabled=allBox.checked); sync(); allBox.onchange=sync;
+  $('#announcementForm').onsubmit=e=>saveAnnouncement(e,existing?.id||null);
+}
+async function saveAnnouncement(e,id=null){
+  e.preventDefault(); if(S.demo)return toast('Announcements require Firebase.');
+  const title=$('#annTitle').value.trim(), message=$('#annMessage').value.trim(), start=$('#annStart').value, end=$('#annEnd').value, audienceAll=$('#annAll').checked, targets=$$('.ann-class').filter(x=>x.checked).map(x=>x.value);
+  if(!title||!message||!start||!end)return toast('Complete all announcement fields.');
+  const startDate=new Date(start), endDate=new Date(end); if(endDate<=startDate)return toast('Expiry must be after the post time.');
+  if(!audienceAll&&!targets.length)return toast('Choose at least one class or select all classes.');
+  const data={title,message,audience_all:audienceAll,target_classes:audienceAll?[]:targets,publish_at:Timestamp.fromDate(startDate),expires_at:Timestamp.fromDate(endDate),updated_at:serverTimestamp(),updated_by:S.user?.id||''};
+  try{
+    if(id){await updateDoc(doc(db,'announcements',id),data);await setDoc(doc(collection(db,'audit_logs')),auditDoc('announcement_update','announcement',id,`Updated announcement: ${title}`,{audience:audienceAll?'all':targets,publish_at:startDate.toISOString(),expires_at:endDate.toISOString()}));}
+    else{const ref=doc(collection(db,'announcements'));await setDoc(ref,{...data,created_at:serverTimestamp(),created_by:S.user?.id||''});await setDoc(doc(collection(db,'audit_logs')),auditDoc('announcement_create','announcement',ref.id,`Created announcement: ${title}`,{audience:audienceAll?'all':targets,publish_at:startDate.toISOString(),expires_at:endDate.toISOString()}));}
+    await loadAnnouncements();closeModal();render();toast(id?'Announcement updated.':'Announcement saved.');
+  }catch(err){toast('Could not save announcement: '+friendlyError(err))}
+}
+async function deleteAnnouncement(id){
+  const a=S.announcements.find(x=>x.id===id);if(!a||!confirm(`Delete "${a.title}"?`))return;
+  try{await deleteDoc(doc(db,'announcements',id));await setDoc(doc(collection(db,'audit_logs')),auditDoc('announcement_delete','announcement',id,`Deleted announcement: ${a.title}`,{}));S.announcements=S.announcements.filter(x=>x.id!==id);showAnnouncementManager();toast('Announcement deleted.')}catch(err){toast('Could not delete announcement: '+friendlyError(err))}
+}
 
 async function loadPublicSummary(){
   try{
@@ -340,6 +455,7 @@ function renderPublicDashboard(){
     return;
   }
   $('#publicContent').innerHTML=`
+    ${renderAnnouncementSection({publicView:true})}
     <section class="hero-card" style="padding:24px">
       <p class="eyebrow">${esc(s.academic_year_label||'Current academic year')}</p>
       <h1 style="margin:.2rem 0 .5rem">Growing together, Sunday by Sunday.</h1>
@@ -494,14 +610,14 @@ async function selectDashboardPeriod(key){
   renderDashboard();
 }
 
-async function loadCloud(){const user=auth.currentUser;if(!user){S.user=S.profile=null;S.people=[];S.attendance=[];return}S.user={id:user.uid,email:user.email};S.profile=await ensureProfile(user);await loadAcademicYearConfig();await loadClassCatalog();await loadPublicSummary();S.classes=Array.isArray(S.profile.allowed_groups)?S.profile.allowed_groups:[];const scope=S.profile.role==='admin'?null:S.classes;S.people=(await getCollectionRows('people',scope)).sort((a,b)=>(a.group_name||'').localeCompare(b.group_name||'')||(a.name||'').localeCompare(b.name||''));S.attendance=(await getCollectionRows('attendance',scope)).sort((a,b)=>(a.attendance_date||'').localeCompare(b.attendance_date||''));if(S.profile.role==='admin'){const us=await getDocs(collection(db,'profiles'));S.users=us.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.full_name||'').localeCompare(b.full_name||''));S.assignments=S.users.flatMap(u=>(u.allowed_groups||[]).map(g=>({user_id:u.id,group_name:g})));await loadHistoricalSummaryIndex()}else{S.users=[];S.assignments=[];S.auditLogs=[];S.auditCursor=null;S.auditHasMore=false;S.historicalSummaries=[]}autoBackup('cloud-sync')}
+async function loadCloud(){const user=auth.currentUser;if(!user){S.user=S.profile=null;S.people=[];S.attendance=[];return}S.user={id:user.uid,email:user.email};S.profile=await ensureProfile(user);await loadAcademicYearConfig();await loadClassCatalog();await loadPublicSummary();await loadAnnouncements();S.classes=Array.isArray(S.profile.allowed_groups)?S.profile.allowed_groups:[];const scope=S.profile.role==='admin'?null:S.classes;S.people=(await getCollectionRows('people',scope)).sort((a,b)=>(a.group_name||'').localeCompare(b.group_name||'')||(a.name||'').localeCompare(b.name||''));S.attendance=(await getCollectionRows('attendance',scope)).sort((a,b)=>(a.attendance_date||'').localeCompare(b.attendance_date||''));if(S.profile.role==='admin'){const us=await getDocs(collection(db,'profiles'));S.users=us.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.full_name||'').localeCompare(b.full_name||''));S.assignments=S.users.flatMap(u=>(u.allowed_groups||[]).map(g=>({user_id:u.id,group_name:g})));await loadHistoricalSummaryIndex();await cleanupExpiredAnnouncements()}else{S.users=[];S.assignments=[];S.auditLogs=[];S.auditCursor=null;S.auditHasMore=false;S.historicalSummaries=[]}autoBackup('cloud-sync')}
 async function init(){S.selectedDate=sundayOnOrBefore();const b=academicBounds();S.reportFrom=b.start;S.reportTo=Math.min(b.end,iso(new Date()));bindStatic();if(configured){const app=initializeApp(cfg.firebase);auth=getAuth(app);db=getFirestore(app);onAuthStateChanged(auth,async()=>{try{await loadCloud();const ay=academicBounds();S.reportFrom=ay.start;S.reportTo=Math.min(ay.end,iso(new Date()));setAuthUI()}catch(e){console.error(e);toast('Could not load Firebase data: '+friendlyError(e))}})}setAuthUI()}
 function bindStatic(){
  $('#loginForm').addEventListener('submit',async e=>{e.preventDefault();if(!configured)return;try{await signInWithEmailAndPassword(auth,$('#loginEmail').value.trim(),$('#loginPassword').value)}catch(err){toast(friendlyError(err))}});
  $('#forgotPassword').onclick=async()=>{if(!configured)return;const existing=$('#loginEmail').value.trim();showModal(`<h3>Reset password</h3><p class="muted">Enter the email address used for your Sunday School account. Firebase will send a password-reset link.</p><form id="resetForm" class="form-stack"><label>Email<input id="resetEmail" type="email" required value="${esc(existing)}" placeholder="teacher@example.com"></label><button class="btn primary wide" type="submit">Send reset link</button></form>`);$('#resetForm').onsubmit=async e=>{e.preventDefault();try{await sendPasswordResetEmail(auth,$('#resetEmail').value.trim());closeModal();toast('Password reset email sent. Check your inbox and spam folder.')}catch(err){toast(friendlyError(err))}}};
  $('#showSignup').onclick=()=>$('#signupForm').classList.toggle('hidden');
  $('#signupForm').addEventListener('submit',async e=>{e.preventDefault();if(!configured)return;try{const cred=await createUserWithEmailAndPassword(auth,$('#signupEmail').value.trim(),$('#signupPassword').value);await updateProfile(cred.user,{displayName:$('#signupName').value.trim()});const signupBatch=writeBatch(db);const profileData={full_name:$('#signupName').value.trim(),email:cred.user.email||'',role:'teacher',allowed_groups:[],created_at:serverTimestamp()};signupBatch.set(doc(db,'profiles',cred.user.uid),profileData);signupBatch.set(doc(collection(db,'audit_logs')), {actor_uid:cred.user.uid,actor_name:profileData.full_name,actor_email:profileData.email,action:'account_request',entity_type:'profile',entity_id:cred.user.uid,summary:`Account requested by ${profileData.full_name}`,details:{email:profileData.email,role:'teacher'},created_at:new Date().toISOString()});await signupBatch.commit();toast('Teacher account created. Ask the admin to assign your class.')}catch(err){toast(friendlyError(err))}});
- $('#demoLogin').onclick=()=>{localLoad();setAuthUI()};$('#showPublicDashboard').onclick=async()=>{await loadPublicSummary();renderPublicDashboard()};$('#publicBackToLogin').onclick=()=>{$('#publicView').classList.add('hidden');$('#authView').classList.remove('hidden')};
+ $('#demoLogin').onclick=()=>{localLoad();setAuthUI()};$('#showPublicDashboard').onclick=async()=>{await Promise.all([loadPublicSummary(),loadAnnouncements()]);renderPublicDashboard()};$('#publicBackToLogin').onclick=()=>{$('#publicView').classList.add('hidden');$('#authView').classList.remove('hidden')};
  const doLogout=async()=>{try{if(S.demo){S.user=S.profile=null;S.demo=false;setAuthUI()}else{await signOut(auth);toast('Signed out successfully')}}catch(e){console.error(e);toast('Could not sign out: '+friendlyError(e))}};
  $('#logoutMenuBtn').onclick=doLogout;
  $('#topAvatar').onclick=e=>{e.stopPropagation();$('#accountMenu').classList.toggle('hidden')};
@@ -541,12 +657,13 @@ function renderDashboard(){
   let classRates=groups.map(g=>{const pids=new Set(S.people.filter(p=>p.active&&p.group_name===g).map(p=>String(p.id)));return {g,rate:calcRate(ay.filter(a=>pids.has(String(a.person_id))))}});
 
   $('#content').innerHTML=`<section class="hero-strip"><div><div class="toolbar" style="padding:0;margin-bottom:10px"><label class="field"><span>Academic year</span><select id="dashboardPeriod">${periods.map(p=>`<option value="${esc(p.key)}" ${p.key===S.dashboardPeriod?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label></div><p class="eyebrow">${esc(b.label)}</p><h3>Good ${new Date().getHours()<12?'morning':new Date().getHours()<17?'afternoon':'evening'}, ${esc((S.profile.full_name||'').split(' ')[0])}</h3><p>${S.profile.role==='admin'?'A clear view of attendance, follow-ups and every class.':`Your assigned classes: ${esc(groups.join(', ')||'awaiting assignment')}.`}</p></div><div class="hero-actions"><button class="btn primary" id="quickAttendance">Mark attendance</button><button class="btn secondary" id="quickReport">Reports</button></div></section>
+  ${renderAnnouncementSection()}
   <div class="stats"><div class="stat-card"><span>Active students</span><strong>${students.length}</strong><small>${groups.length} class${groups.length===1?'':'es'} in view</small></div><div class="stat-card"><span>${esc(b.label)} attendance</span><strong>${calcRate(ay)}%</strong><small>${ay.length} marked records</small></div><div class="stat-card"><span>Latest Sunday</span><strong>${latest?calcRate(latestRows)+'%':'—'}</strong><small>${latest?fmtDate(latest):'No attendance yet'}</small></div><div class="stat-card"><span>Follow-up alerts</span><strong>${follow.length}</strong><small>${cfg.chronicAbsenceThreshold||3}+ consecutive absences</small></div></div>
   <div class="grid-2"><section class="panel"><div class="panel-head"><div><h3>Class attendance %</h3><p class="muted tiny">Attendance percentage across ${esc(b.label)}</p></div></div><div class="class-bars">${classRates.length?classRates.map(x=>`<div class="bar-row"><span>${esc(x.g)}</span><div class="track"><div class="fill" style="width:${x.rate}%"></div></div><b>${x.rate}%</b></div>`).join(''):'<div class="empty">No assigned classes yet.</div>'}</div></section>
   <section class="panel"><div class="panel-head"><div><h3>Needs a check-in</h3><p class="muted tiny">Consecutive recorded absences</p></div></div><div class="alert-list">${follow.length?follow.slice(0,7).map(x=>personRow(x.p,`<span class="badge bad">${x.n} Sundays</span>`)).join(''):'<div class="empty">No chronic-absence alerts 🎉</div>'}</div></section></div>
   <div class="grid-equal" style="margin-top:18px"><section class="panel"><div class="panel-head"><div><h3>Current attendance streaks</h3><p class="muted tiny">Students with consecutive presents</p></div></div><div class="streak-list">${streaks.length?streaks.map(x=>personRow(x.p,`<span class="badge good">${x.n} in a row</span>`)).join(''):'<div class="empty">Streaks will appear after more Sundays are marked.</div>'}</div></section><section class="panel"><div class="panel-head"><div><h3>Monthly average attendance %</h3><p class="muted tiny">Weighted monthly attendance rate · Present ÷ total marked</p></div></div>${monthlyChart(ay,b)}</section></div>`;
   $('#dashboardPeriod').onchange=e=>selectDashboardPeriod(e.target.value);
-  $('#quickAttendance').onclick=()=>switchView('attendance');$('#quickReport').onclick=()=>switchView('reports');bindProfileLinks();
+  $('#quickAttendance').onclick=()=>switchView('attendance');$('#quickReport').onclick=()=>switchView('reports');bindAnnouncementDashboardButton();bindProfileLinks();
 }
 function renderHistoricalDashboard(s,periods){
   const classRates=(s.class_summary||[]).map(x=>({g:x.group_name,rate:Number(x.attendance_rate||0)}));
@@ -1081,6 +1198,7 @@ async function importSeedData(){if(S.profile.role!=='admin')return;const ok=conf
 function friendlyError(err){const code=err?.code||'';if(code.includes('invalid-credential'))return 'Incorrect email or password.';if(code.includes('email-already-in-use'))return 'That email already has an account.';if(code.includes('weak-password'))return 'Password must be at least 6 characters.';if(code.includes('user-not-found'))return 'No account was found for that email.';if(code.includes('too-many-requests'))return 'Too many attempts. Please wait a little and try again.';if(code.includes('permission-denied'))return 'Firebase blocked this action. Check Firestore Rules and your account role.';return err?.message?.replace(/^Firebase:\s*/,'')||'Something went wrong.'}
 function bindProfileLinks(){$$('.profile-link').forEach(b=>b.onclick=()=>showProfile(Number(b.dataset.id)))}
 function showProfile(id){const p=S.people.find(x=>x.id===id);if(!p)return;const b=academicBounds(),h=historyForPerson(id,b.start,b.end),rate=calcRate(h),cur=streak(id),best=streak(id,'best');showModal(`<div class="profile-head"><div class="avatar">${initials(p.name)}</div><div><p class="eyebrow">${esc(p.group_name)}</p><h3 style="margin:0">${esc(p.name)}</h3><p class="muted tiny">${esc(p.role)}</p></div></div><div class="profile-kpis"><div class="profile-kpi"><span>Attendance</span><b>${rate}%</b></div><div class="profile-kpi"><span>Present</span><b>${h.filter(x=>statusNorm(x.status)==='Present').length}</b></div><div class="profile-kpi"><span>Current streak</span><b>${cur}</b></div><div class="profile-kpi"><span>Best streak</span><b>${best}</b></div></div><h4 style="margin:22px 0 8px">${esc(b.label)} history</h4><div class="table-wrap"><table style="min-width:0"><thead><tr><th>Date</th><th>Status</th></tr></thead><tbody>${h.slice().sort((a,b)=>b.attendance_date.localeCompare(a.attendance_date)).map(a=>`<tr><td>${fmtDate(a.attendance_date)}</td><td><span class="badge ${statusNorm(a.status)==='Present'?'good':'bad'}">${statusNorm(a.status)}</span></td></tr>`).join('')||'<tr><td colspan="2" class="empty">No attendance yet.</td></tr>'}</tbody></table></div>`)}
+if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('./service-worker.js').catch(e=>console.warn('Service worker registration failed',e)));}
 init();
 })();
 
